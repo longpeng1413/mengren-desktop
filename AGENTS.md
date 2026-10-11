@@ -34,6 +34,8 @@ These rules apply to every future modification in this project.
 - `tests/conftest.py` redirects `APPDATA` to a temporary folder for every test so the developer's
   real `%APPDATA%\AIShot` settings are never touched. Keep it that way.
 - Run the full suite with `.venv\Scripts\python.exe -m pytest -q`.
+- Never delete `dist\` or another version's folder in it by hand: the developer may be running
+  a release straight from there. The build script replaces only the current version's folder.
 - Build with `scripts\build_windows.ps1`; the release is the single folder
   `dist\猛人桌面助手v<version>正式版\` (EXE + docs at the top, runtime in `_internal`).
   The script deletes Qt parts the app never loads; after upgrading PySide6, check no remaining

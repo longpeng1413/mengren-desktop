@@ -13,6 +13,7 @@ from app.hotkeys import GlobalHotkey
 from app.icon import application_icon
 from app.preferences import HotkeySettings, load_hotkey_settings, save_hotkey_settings
 from app.presentation_hotkeys import PresentationHotkeys
+from app.qt_translation import install_chinese_translation
 from app.system_actions import put_computer_to_sleep, toggle_calculator
 from app.tray import ApplicationTray
 from core.capture.capture_service import CaptureService
@@ -59,6 +60,7 @@ def run() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_DISPLAY_NAME)
     app.setQuitOnLastWindowClosed(False)
+    install_chinese_translation(app)
     icon = application_icon()
     app.setWindowIcon(icon)
     autostart.refresh_registration()

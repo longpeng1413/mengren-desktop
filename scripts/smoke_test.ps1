@@ -10,9 +10,18 @@ param(
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$exe = Get-ChildItem -Path (Join-Path $projectRoot "dist\*\*.exe") | Select-Object -First 1
+$brandingSource = Get-Content `
+    -LiteralPath (Join-Path $projectRoot "app\branding.py") `
+    -Raw `
+    -Encoding UTF8
+if ($brandingSource -notmatch '(?m)^APP_VERSION\s*=\s*"([^"]+)"') {
+    throw "Unable to read APP_VERSION from app\branding.py."
+}
+$version = $Matches[1]
+# Test the EXE of the current version only, never an older copy left in dist\.
+$exe = Get-ChildItem -Path (Join-Path $projectRoot "dist\*\*v$version.exe") | Select-Object -First 1
 if ($null -eq $exe) {
-    throw "No packaged EXE found under dist\. Run build_windows.ps1 first."
+    throw "No packaged v$version EXE found under dist\. Run build_windows.ps1 first."
 }
 
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"

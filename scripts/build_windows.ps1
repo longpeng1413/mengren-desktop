@@ -44,11 +44,13 @@ $notesName = (-join @([char]0x7248, [char]0x672C, [char]0x8BF4, [char]0x660E)) +
 $displayName = $productName + "v" + $version
 $releaseRoot = Join-Path $distRoot ($displayName + $officialName)
 
-# A test build that is still running locks its files and breaks the build half-way.
+# Only this version's release folder and build\ are ever replaced. Other version
+# folders in dist\ may be the copy the developer is using day to day, so they
+# are never touched. A running copy of this version would lock its files.
 $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
     $_.Path -and (
-        $_.Path.StartsWith($distRoot, [StringComparison]::OrdinalIgnoreCase) -or
-        $_.Path.StartsWith($buildRoot, [StringComparison]::OrdinalIgnoreCase)
+        $_.Path.StartsWith($releaseRoot + "\", [StringComparison]::OrdinalIgnoreCase) -or
+        $_.Path.StartsWith($buildRoot + "\", [StringComparison]::OrdinalIgnoreCase)
     )
 })
 if ($running.Count -gt 0) {
@@ -100,7 +102,6 @@ $unusedQt = @(
     "Qt6VirtualKeyboard.dll",
     "Qt6MultimediaWidgets.dll",
     "QtMultimediaWidgets.pyd",
-    "translations",
     "plugins\generic",
     "plugins\networkinformation",
     "plugins\platforminputcontexts",
@@ -120,6 +121,14 @@ foreach ($item in $unusedQt) {
         Remove-Item -LiteralPath $path -Recurse -Force
     }
 }
+# Keep only the Chinese catalog for Qt's own dialogs (app\qt_translation.py).
+$translations = Join-Path $qtRoot "translations"
+if (-not (Test-Path -LiteralPath (Join-Path $translations "qtbase_zh_CN.qm"))) {
+    throw "Missing PySide6 translations\qtbase_zh_CN.qm."
+}
+Get-ChildItem -LiteralPath $translations -File |
+    Where-Object { $_.Name -ne "qtbase_zh_CN.qm" } |
+    Remove-Item -Force
 Copy-Item `
     -LiteralPath (Join-Path $projectRoot $guideName) `
     -Destination (Join-Path $bundleRoot ($displayName + $officialName + $guideName)) `
