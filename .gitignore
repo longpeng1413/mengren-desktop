@@ -1,0 +1,13 @@
+.venv/
+.env
+__pycache__/
+*.py[cod]
+capture.png
+.vscode/
+build/
+dist/
+*.spec
+*.log
+
+# Local credentials and user-supplied copyrighted reminder audio.
+resources/audio/default_reminder.mp3
