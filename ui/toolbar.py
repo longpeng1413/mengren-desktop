@@ -5,7 +5,6 @@ from __future__ import annotations
 from PySide6.QtCore import QPoint, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QColorDialog,
     QHBoxLayout,
     QMenu,
     QPushButton,
@@ -13,6 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui.color_picker import pick_color
 from ui.toolbar_drag_handle import ToolbarDragHandle
 
 
@@ -253,7 +253,7 @@ class EditorToolbar(QWidget):
         self.tool_selected.emit(tool)
 
     def _choose_color(self) -> None:
-        color = QColorDialog.getColor(self._color, self, "选择标注颜色")
+        color = pick_color(self._color, self, "选择标注颜色")
         if not color.isValid():
             return
         self._color = color

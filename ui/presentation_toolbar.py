@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Signal, Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QColorDialog, QHBoxLayout, QMenu, QPushButton, QToolButton, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QMenu, QPushButton, QToolButton, QWidget
 
 from app.preferences import PresentationShortcutSettings
+from ui.color_picker import pick_color
 from ui.toolbar_drag_handle import ToolbarDragHandle
 
 
@@ -205,7 +206,7 @@ class PresentationToolbar(QWidget):
         self.tool_selected.emit(tool)
 
     def _choose_color(self) -> None:
-        color = QColorDialog.getColor(self._color, self, "选择教鞭颜色")
+        color = pick_color(self._color, self, "选择教鞭颜色")
         if not color.isValid():
             return
         self._color = QColor(color)

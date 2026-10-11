@@ -24,7 +24,6 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QColorDialog,
     QComboBox,
     QDateTimeEdit,
     QDialog,
@@ -59,6 +58,7 @@ from app.reminder_preferences import (
     save_reminders,
 )
 from app.system_actions import open_calculator, put_computer_to_sleep
+from ui.color_picker import pick_color
 
 
 def _parse_datetime(value: str) -> datetime | None:
@@ -774,7 +774,7 @@ class ReminderEditorDialog(QDialog):
         )
 
     def _choose_color(self) -> None:
-        color = QColorDialog.getColor(self._text_color, self, "选择提醒文字颜色")
+        color = pick_color(self._text_color, self._color_button, "选择提醒文字颜色")
         if color.isValid():
             self._text_color = color
             self._update_color_button()
