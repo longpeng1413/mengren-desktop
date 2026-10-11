@@ -42,5 +42,6 @@ These rules apply to every future modification in this project.
   `gh release create v<version>` with `dist\mengren-desktop-v<version>-windows-x64.zip` and
   `dist\SHA256SUMS.txt`, titled `猛人桌面助手 v<version> 正式版`.
 - Do not deliver a release until tests pass, the build finishes without errors and the packaged
-  EXE starts. When smoke-testing on the developer's machine, note that a packaged EXE re-points an
-  existing Windows startup entry to itself; restore the original entry afterwards.
+  EXE starts. Always launch it with `scripts\smoke_test.ps1`, never by hand: a packaged EXE
+  re-points the developer's real Windows startup entry to itself, and the script saves and
+  restores every startup entry name this product has used.

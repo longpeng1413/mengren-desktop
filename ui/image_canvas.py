@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import atan2, ceil, cos, floor, sin
 
 from PySide6.QtCore import QPoint, QRect, QSize, Signal, Qt
@@ -10,14 +10,14 @@ from PySide6.QtGui import (
     QColor,
     QCursor,
     QFont,
-    QGuiApplication,
+    QFontMetrics,
     QImage,
     QKeySequence,
     QPainter,
     QPen,
     QTransform,
 )
-from PySide6.QtWidgets import QDialog, QInputDialog, QWidget
+from PySide6.QtWidgets import QLineEdit, QWidget
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +30,54 @@ class _AnnotationCommand:
     points: tuple[QPoint, ...] = ()
     text: str = ""
     text_size: int = 0
+    item_id: int = 0
+
+
+def _text_font(pixel_size: int) -> QFont:
+    """Return the bold font used for every text annotation."""
+    font = QFont()
+    font.setPixelSize(max(1, pixel_size))
+    font.setBold(True)
+    return font
+
+
+@dataclass(frozen=True, slots=True)
+class _TextItem:
+    """One movable, editable text annotation stored in native image pixels."""
+
+    item_id: int
+    position: QPoint
+    text: str
+    color_rgba: int
+    pixel_size: int
+
+    def rect(self) -> QRect:
+        """Return the text's top-left anchored bounds in image pixels."""
+        metrics = QFontMetrics(_text_font(self.pixel_size))
+        return QRect(
+            QPoint(self.position),
+            QSize(max(1, metrics.horizontalAdvance(self.text)), metrics.height()),
+        )
+
+
+class _InlineTextEdit(QLineEdit):
+    """In-place text box: Enter or clicking elsewhere finishes, Esc cancels."""
+
+    cancelled = Signal()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            # Never let Escape reach the editor window, which would close it.
+            self.cancelled.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+        if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+            event.accept()
+
+
+# Base image, raster annotations, display size and live text items.
+_EditorState = tuple[QImage, QImage, QSize, tuple[_TextItem, ...]]
 
 
 class ImageCanvas(QWidget):
@@ -44,6 +92,9 @@ class ImageCanvas(QWidget):
     _HIT_MARGIN = 10
     _HANDLE_SIZE = 10
     _MAX_UNDO_STEPS = 50
+    _TEXT_DRAG_THRESHOLD = 3
+    # Text-box chrome: 1px border plus Qt's fixed 2px line-edit text margin.
+    _TEXT_EDITOR_OFFSET = QPoint(3, 3)
     _TOOLS = {
         "select",
         "arrow",
@@ -64,8 +115,23 @@ class ImageCanvas(QWidget):
         self._tool = "select"
         self._base_image = QImage()
         self._annotations = QImage()
-        self._undo_stack: list[tuple[QImage, QImage, QSize]] = []
-        self._redo_stack: list[tuple[QImage, QImage, QSize]] = []
+        self._undo_stack: list[_EditorState] = []
+        self._redo_stack: list[_EditorState] = []
+        self._texts: dict[int, _TextItem] = {}
+        self._checkpoint_texts: dict[int, _TextItem] = {}
+        self._next_text_id = 1
+        self._selected_text_id = 0
+        self._text_drag_id = 0
+        self._text_drag_origin = QPoint()
+        self._text_drag_start = QPoint()
+        self._text_drag_moved = False
+        self._text_drag_snapshot: tuple[_TextItem, ...] = ()
+        self._text_editor: _InlineTextEdit | None = None
+        self._text_editing = False
+        self._editing_text_id = 0
+        self._editing_position = QPoint()
+        self._editing_color = QColor()
+        self._editing_pixel_size = 0
         self._lightweight_history = False
         self._annotation_commands: list[_AnnotationCommand] = []
         self._annotation_redo_commands: list[_AnnotationCommand] = []
@@ -102,6 +168,7 @@ class ImageCanvas(QWidget):
         """Replace the editable image and start a fresh annotation history."""
         active_edge = self._active_edge if preserve_resize else ""
         display_size = self.size() if preserve_display_size else image.size()
+        self._finish_text_editing(commit=False)
         self._base_image = QImage(image)
         self._annotations = self._transparent_layer(self._base_image)
         self._undo_stack.clear()
@@ -109,6 +176,10 @@ class ImageCanvas(QWidget):
         self._annotation_commands.clear()
         self._annotation_redo_commands.clear()
         self._annotation_checkpoint = QImage()
+        self._texts.clear()
+        self._checkpoint_texts.clear()
+        self._selected_text_id = 0
+        self._text_drag_id = 0
         self._active_command_points.clear()
         self.undo_available_changed.emit(False)
         self.redo_available_changed.emit(False)
@@ -133,6 +204,7 @@ class ImageCanvas(QWidget):
         self._annotation_commands.clear()
         self._annotation_redo_commands.clear()
         self._annotation_checkpoint = QImage()
+        self._checkpoint_texts = dict(self._texts)
         self._active_command_points.clear()
         self.undo_available_changed.emit(False)
         self.redo_available_changed.emit(False)
@@ -147,17 +219,26 @@ class ImageCanvas(QWidget):
         visible = bool(visible)
         if visible == self._annotations_visible:
             return
+        if not visible:
+            self._finish_text_editing()
         self._annotations_visible = visible
         self.update()
 
     def replace_image(self, image: QImage) -> None:
-        """Replace the rendered image while keeping it undoable and visually stable."""
+        """Replace the rendered image while keeping it undoable and visually stable.
+
+        The replacement is expected to already contain every annotation, so
+        both the raster layer and the live text items start empty again.
+        """
         if image.isNull():
             return
+        self._finish_text_editing()
         display_size = self.size()
         self._push_undo_state()
         self._base_image = QImage(image)
         self._annotations = self._transparent_layer(self._base_image)
+        self._texts.clear()
+        self._selected_text_id = 0
         self.setFixedSize(display_size if not display_size.isEmpty() else image.size())
         self.update()
 
@@ -171,6 +252,9 @@ class ImageCanvas(QWidget):
         """Select one editing tool or return to selection-resize mode."""
         if tool not in self._TOOLS:
             return
+        self._finish_text_editing()
+        if tool not in {"text", "select"}:
+            self._selected_text_id = 0
         self._tool = tool
         self._drawing = False
         self._active_edge = ""
@@ -226,9 +310,17 @@ class ImageCanvas(QWidget):
         return True
 
     def set_annotation_color(self, color: QColor) -> None:
-        """Use one selected color for all new annotations."""
-        if color.isValid():
-            self._annotation_color = QColor(color)
+        """Use one color for new annotations and recolor the selected text."""
+        if not color.isValid():
+            return
+        self._annotation_color = QColor(color)
+        if self._text_editing:
+            self._editing_color = QColor(color)
+            self._style_text_editor()
+            return
+        item = self._selected_text()
+        if item is not None and item.color_rgba != color.rgba():
+            self._store_text(replace(item, color_rgba=color.rgba()))
 
     def set_stroke_width(self, width: int) -> None:
         """Set the display-space width used by subsequent drawing tools."""
@@ -240,28 +332,53 @@ class ImageCanvas(QWidget):
         return self._stroke_width
 
     def set_text_size(self, size: int) -> None:
-        """Set the displayed text height used by subsequent text annotations."""
+        """Set the text height for new text and resize the selected text."""
         self._text_size = max(12, min(int(size), 72))
+        pixel_size = self._native_pen_width(self._text_size)
+        if self._text_editing:
+            self._editing_pixel_size = pixel_size
+            self._style_text_editor()
+            return
+        item = self._selected_text()
+        if item is not None and item.pixel_size != pixel_size:
+            self._store_text(replace(item, pixel_size=pixel_size))
 
     def mirror_horizontal(self) -> None:
-        """Mirror image and annotations without changing the selected screen size."""
+        """Mirror image and annotations without changing the selected screen size.
+
+        Text items keep their reading direction and only swap sides.
+        """
         if self._base_image.isNull():
             return
+        self._finish_text_editing()
         display_size = self.size()
         self._push_undo_state()
         transform = QTransform().scale(-1, 1)
         self._base_image = self._base_image.transformed(transform)
         self._annotations = self._annotations.transformed(transform)
+        width = self._base_image.width()
+        self._texts = {
+            item_id: replace(
+                item,
+                position=QPoint(
+                    width - item.position.x() - item.rect().width(),
+                    item.position.y(),
+                ),
+            )
+            for item_id, item in self._texts.items()
+        }
         self.setFixedSize(display_size)
         self.update()
 
     def undo(self) -> None:
         """Restore the most recent image or annotation state."""
+        self._finish_text_editing()
         if self._lightweight_history:
             if not self._annotation_commands:
                 return
             self._annotation_redo_commands.append(self._annotation_commands.pop())
             self._rebuild_annotations()
+            self._forget_missing_selection()
             self.undo_available_changed.emit(bool(self._annotation_commands))
             self.redo_available_changed.emit(True)
             self.update()
@@ -276,12 +393,14 @@ class ImageCanvas(QWidget):
 
     def redo(self) -> None:
         """Restore the most recently undone image or annotation state."""
+        self._finish_text_editing()
         if self._lightweight_history:
             if not self._annotation_redo_commands:
                 return
             command = self._annotation_redo_commands.pop()
             self._annotation_commands.append(command)
             self._apply_annotation_command(self._annotations, command)
+            self._forget_missing_selection()
             self.undo_available_changed.emit(True)
             self.redo_available_changed.emit(bool(self._annotation_redo_commands))
             self.update()
@@ -298,6 +417,8 @@ class ImageCanvas(QWidget):
         """Delete all annotations while preserving the captured image."""
         if self._annotations.isNull():
             return
+        self._finish_text_editing()
+        self._selected_text_id = 0
         if self._lightweight_history:
             command = self._new_annotation_command("clear")
             self._apply_annotation_command(self._annotations, command)
@@ -306,19 +427,32 @@ class ImageCanvas(QWidget):
             return
         self._push_undo_state()
         self._annotations.fill(Qt.GlobalColor.transparent)
+        self._texts.clear()
         self.update()
 
     def rendered_image(self) -> QImage:
         """Return the current image with all finished annotations applied."""
+        self._finish_text_editing()
         rendered = QImage(self._base_image)
         if rendered.isNull():
             return rendered
         painter = QPainter(rendered)
         try:
             painter.drawImage(0, 0, self._annotations)
+            self._paint_text_items(painter)
         finally:
             painter.end()
         return rendered
+
+    def delete_selected_text(self) -> bool:
+        """Remove the selected text annotation, if any, as one undoable step."""
+        item = self._selected_text()
+        if item is None:
+            return False
+        self._remove_text(item.item_id)
+        self._selected_text_id = 0
+        self.update()
+        return True
 
     def keyPressEvent(self, event) -> None:
         """Support undo, recovery, and annotation clearing shortcuts."""
@@ -331,7 +465,8 @@ class ImageCanvas(QWidget):
             event.accept()
             return
         if event.key() == Qt.Key.Key_Delete:
-            self.clear_annotations()
+            if not self.delete_selected_text():
+                self.clear_annotations()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -345,6 +480,8 @@ class ImageCanvas(QWidget):
                 painter.drawImage(self.rect(), self._base_image)
                 if self._annotations_visible:
                     painter.drawImage(self.rect(), self._annotations)
+                    if self._texts:
+                        self._paint_display_texts(painter)
             if self._tool == "crop":
                 selection = (
                     QRect(self._drag_start, self._drag_current).normalized()
@@ -377,6 +514,11 @@ class ImageCanvas(QWidget):
             return
         if event.button() != Qt.MouseButton.LeftButton or self._base_image.isNull():
             return
+        if self._text_editing:
+            # The first click outside an open text box only finishes it.
+            self._finish_text_editing()
+            event.accept()
+            return
 
         self.setFocus(Qt.FocusReason.MouseFocusReason)
         point = event.position().toPoint()
@@ -403,11 +545,24 @@ class ImageCanvas(QWidget):
                 event.accept()
                 return
 
+        if self._tool in {"text", "select"}:
+            item = self._text_item_at(point)
+            if item is not None:
+                self._selected_text_id = item.item_id
+                self._text_drag_id = item.item_id
+                self._text_drag_origin = point
+                self._text_drag_start = QPoint(item.position)
+                self._text_drag_moved = False
+                self._text_drag_snapshot = tuple(self._texts.values())
+                self.update()
+                event.accept()
+                return
+            if self._selected_text_id:
+                self._selected_text_id = 0
+                self.update()
         if self._tool == "text":
-            self._add_text(
-                self._image_point(point),
-                event.globalPosition().toPoint(),
-            )
+            self._begin_text_editing(None, self._to_image(point))
+            event.accept()
             return
         if self._tool not in {
             "arrow",
@@ -442,6 +597,10 @@ class ImageCanvas(QWidget):
     def mouseMoveEvent(self, event) -> None:
         """Update a resize operation or active annotation preview."""
         point = event.position().toPoint()
+        if self._text_drag_id:
+            self._drag_text_to(point)
+            event.accept()
+            return
         if self._crop_resize_edge:
             self._crop_selection = self._resized_crop_selection(
                 self._crop_resize_start,
@@ -481,12 +640,24 @@ class ImageCanvas(QWidget):
             return
         if self._tool == "crop":
             self._update_cursor(self._crop_edge_at(point))
-        else:
-            self._update_cursor(self._edge_at(point))
+            return
+        edge = self._edge_at(point)
+        if (
+            not edge
+            and self._tool in {"text", "select"}
+            and self._text_item_at(point) is not None
+        ):
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+            return
+        self._update_cursor(edge)
 
     def mouseReleaseEvent(self, event) -> None:
         """Commit an annotation or finish a border resize interaction."""
         if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._text_drag_id:
+            self._finish_text_drag(event.position().toPoint())
+            event.accept()
             return
         if self._crop_resize_edge:
             self._crop_resize_edge = ""
@@ -563,34 +734,43 @@ class ImageCanvas(QWidget):
         else:
             self.update()
 
-    def _push_undo_state(self) -> None:
-        """Save a bounded copy of the current editable state."""
+    def _push_undo_state(
+        self,
+        texts: tuple[_TextItem, ...] | None = None,
+    ) -> None:
+        """Save a bounded copy of the current (or given earlier) editable state."""
         if self._base_image.isNull():
             return
-        self._append_bounded(self._undo_stack, self._current_state())
+        state = self._current_state()
+        if texts is not None:
+            state = (*state[:3], texts)
+        self._append_bounded(self._undo_stack, state)
         self._redo_stack.clear()
         self.undo_available_changed.emit(True)
         self.redo_available_changed.emit(False)
 
-    def _current_state(self) -> tuple[QImage, QImage, QSize]:
+    def _current_state(self) -> _EditorState:
         """Return an isolated copy of the current editable state."""
         return (
             QImage(self._base_image),
             QImage(self._annotations),
             QSize(self.size()),
+            tuple(self._texts.values()),
         )
 
-    def _restore_state(self, state: tuple[QImage, QImage, QSize]) -> None:
-        """Restore one image, annotation, and display-size snapshot."""
-        base_image, annotations, display_size = state
+    def _restore_state(self, state: _EditorState) -> None:
+        """Restore one image, annotation, display-size and text snapshot."""
+        base_image, annotations, display_size, texts = state
         self._base_image = QImage(base_image)
         self._annotations = QImage(annotations)
+        self._texts = {item.item_id: item for item in texts}
+        self._forget_missing_selection()
         self.setFixedSize(display_size)
 
     def _append_bounded(
         self,
-        stack: list[tuple[QImage, QImage, QSize]],
-        state: tuple[QImage, QImage, QSize],
+        stack: list[_EditorState],
+        state: _EditorState,
     ) -> None:
         """Append one history snapshot while enforcing the shared size limit."""
         stack.append(state)
@@ -623,7 +803,11 @@ class ImageCanvas(QWidget):
             expired = self._annotation_commands.pop(0)
             if self._annotation_checkpoint.isNull():
                 self._annotation_checkpoint = self._transparent_layer(self._base_image)
-            self._apply_annotation_command(self._annotation_checkpoint, expired)
+            self._apply_annotation_command(
+                self._annotation_checkpoint,
+                expired,
+                self._checkpoint_texts,
+            )
         self.undo_available_changed.emit(True)
         self.redo_available_changed.emit(False)
 
@@ -636,17 +820,35 @@ class ImageCanvas(QWidget):
                 painter.drawImage(0, 0, self._annotation_checkpoint)
             finally:
                 painter.end()
+        texts = dict(self._checkpoint_texts)
         for command in self._annotation_commands:
-            self._apply_annotation_command(self._annotations, command)
+            self._apply_annotation_command(self._annotations, command, texts)
+        self._texts = texts
 
     def _apply_annotation_command(
         self,
         layer: QImage,
         command: _AnnotationCommand,
+        texts: dict[int, _TextItem] | None = None,
     ) -> None:
-        """Paint one replayable command onto an annotation layer."""
+        """Apply one replayable command to an annotation layer and its texts."""
+        if texts is None:
+            texts = self._texts
         if command.tool == "clear":
             layer.fill(Qt.GlobalColor.transparent)
+            texts.clear()
+            return
+        if command.tool == "text_delete":
+            texts.pop(command.item_id, None)
+            return
+        if command.tool == "text_set":
+            texts[command.item_id] = _TextItem(
+                command.item_id,
+                QPoint(command.points[0]),
+                command.text,
+                command.color_rgba,
+                command.text_size,
+            )
             return
         if not command.points:
             return
@@ -680,6 +882,8 @@ class ImageCanvas(QWidget):
                 else:
                     for start, end in zip(points, points[1:]):
                         painter.drawLine(start, end)
+                if command.tool == "eraser":
+                    self._erase_texts(texts, points, width)
                 return
             start, end = command.points[0], command.points[-1]
             width = self._native_pen_width(command.width)
@@ -700,13 +904,6 @@ class ImageCanvas(QWidget):
                 painter.setPen(QPen(color, width))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawRect(QRect(start, end).normalized())
-            elif command.tool == "text":
-                font = QFont()
-                font.setPixelSize(self._native_pen_width(command.text_size))
-                font.setBold(True)
-                painter.setFont(font)
-                painter.setPen(color)
-                painter.drawText(start, command.text)
         finally:
             painter.end()
 
@@ -868,6 +1065,11 @@ class ImageCanvas(QWidget):
         self._push_undo_state()
         self._base_image = self._base_image.copy(image_rect)
         self._annotations = self._annotations.copy(image_rect)
+        offset = image_rect.topLeft()
+        self._texts = {
+            item_id: replace(item, position=item.position - offset)
+            for item_id, item in self._texts.items()
+        }
         self.setFixedSize(display_rect.size())
         self._drag_start = QPoint()
         self._drag_current = QPoint()
@@ -938,6 +1140,9 @@ class ImageCanvas(QWidget):
             painter.drawLine(start, end)
         finally:
             painter.end()
+        if self._tool == "eraser" and self._texts:
+            self._erase_texts(self._texts, (start, end), width)
+            self.update()
 
     def _draw_arrow(
         self,
@@ -972,91 +1177,297 @@ class ImageCanvas(QWidget):
         painter.drawLine(end, left)
         painter.drawLine(end, right)
 
-    def _add_text(self, point: QPoint, global_anchor: QPoint) -> None:
-        """Ask for text and draw it without a background panel."""
-        dialog = QInputDialog(self)
-        dialog.setWindowTitle("添加文字")
-        dialog.setLabelText("文字内容：")
-        dialog.setInputMode(QInputDialog.InputMode.TextInput)
-        dialog.setStyleSheet(
-            """
-            QInputDialog { background-color: #f3f4f6; color: #111111; }
-            QInputDialog QLabel { color: #111111; }
-            QInputDialog QLineEdit {
-                color: #111111; background-color: #ffffff;
-                border: 1px solid #4f89c7; border-radius: 3px; padding: 4px;
-                selection-color: #ffffff; selection-background-color: #1677c8;
-            }
-            QInputDialog QPushButton {
-                color: #111111; background-color: #e5e7eb;
-                border: 1px solid #9ca3af; border-radius: 3px;
-                min-width: 58px; padding: 3px 8px;
-            }
-            QInputDialog QPushButton:hover { background-color: #dbeafe; border-color: #4f89c7; }
-            """
+    # ----- Text annotations ---------------------------------------------------
+
+    def _selected_text(self) -> _TextItem | None:
+        """Return the selected text while a text-capable tool is active."""
+        if self._tool not in {"text", "select"}:
+            return None
+        return self._texts.get(self._selected_text_id)
+
+    def _forget_missing_selection(self) -> None:
+        if self._selected_text_id not in self._texts:
+            self._selected_text_id = 0
+
+    def _to_image(self, point: QPoint) -> QPoint:
+        """Map a display point to image pixels without clamping to the image."""
+        if self.width() <= 0 or self.height() <= 0 or self._base_image.isNull():
+            return QPoint(point)
+        return QPoint(
+            round(point.x() * self._base_image.width() / self.width()),
+            round(point.y() * self._base_image.height() / self.height()),
         )
-        dialog.ensurePolished()
-        dialog.adjustSize()
-        screen = QGuiApplication.screenAt(global_anchor)
-        if screen is None:
-            screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            # Explicit placement is required because this canvas can belong to
-            # a top-level editor spanning the complete multi-monitor desktop.
-            # Qt would otherwise center the dialog over that very large window.
-            dialog.winId()
-            window = dialog.windowHandle()
-            if window is not None:
-                window.setScreen(screen)
-            dialog.move(
-                self._text_dialog_position(
-                    global_anchor,
-                    dialog.sizeHint(),
-                    screen.availableGeometry(),
-                )
+
+    def _to_display(self, point: QPoint) -> QPoint:
+        """Map an image pixel position to this widget's display coordinates."""
+        if self._base_image.isNull() or self._base_image.width() <= 0:
+            return QPoint(point)
+        return QPoint(
+            round(point.x() * self.width() / self._base_image.width()),
+            round(point.y() * self.height() / self._base_image.height()),
+        )
+
+    def _display_text_size(self, pixel_size: int) -> int:
+        """Convert a native font height to the height shown on screen."""
+        if self._base_image.isNull() or self._base_image.height() <= 0:
+            return pixel_size
+        return max(1, round(pixel_size * self.height() / self._base_image.height()))
+
+    def _text_item_at(self, display_point: QPoint) -> _TextItem | None:
+        """Return the top-most visible text under a display point."""
+        if not self._annotations_visible:
+            return None
+        point = self._to_image(display_point)
+        margin = max(2, self._native_pen_width(4))
+        for item in reversed(list(self._texts.values())):
+            if item.rect().adjusted(-margin, -margin, margin, margin).contains(point):
+                return item
+        return None
+
+    def _paint_text_items(self, painter: QPainter, skip_id: int = 0) -> None:
+        """Paint every text item in image coordinates."""
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        for item in self._texts.values():
+            if item.item_id == skip_id:
+                continue
+            painter.setFont(_text_font(item.pixel_size))
+            painter.setPen(QColor.fromRgba(item.color_rgba))
+            metrics = painter.fontMetrics()
+            painter.drawText(
+                item.position + QPoint(0, metrics.ascent()),
+                item.text,
             )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+
+    def _paint_display_texts(self, painter: QPainter) -> None:
+        """Paint text items scaled to the display and mark the selected one."""
+        image_width = self._base_image.width()
+        image_height = self._base_image.height()
+        if image_width <= 0 or image_height <= 0:
             return
-        text = dialog.textValue()
-        if not text.strip():
+        skip_id = self._editing_text_id if self._text_editing else 0
+        painter.save()
+        try:
+            painter.scale(self.width() / image_width, self.height() / image_height)
+            self._paint_text_items(painter, skip_id)
+        finally:
+            painter.restore()
+        selected = self._texts.get(self._selected_text_id)
+        if selected is None or selected.item_id == skip_id:
             return
+        rect = selected.rect()
+        frame = QRect(
+            self._to_display(rect.topLeft()),
+            self._to_display(rect.bottomRight() + QPoint(1, 1)),
+        ).adjusted(-3, -3, 3, 3)
+        painter.save()
+        try:
+            painter.setPen(QPen(QColor("#2da9ff"), 1, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(frame)
+        finally:
+            painter.restore()
+
+    def _store_text(
+        self,
+        item: _TextItem,
+        previous_texts: tuple[_TextItem, ...] | None = None,
+    ) -> None:
+        """Add or replace one text item as a single undoable step."""
         if self._lightweight_history:
-            command = self._new_annotation_command(
-                "text",
-                (point,),
-                text=text,
-                text_size=self._text_size,
+            command = _AnnotationCommand(
+                tool="text_set",
+                color_rgba=item.color_rgba,
+                width=0,
+                points=(QPoint(item.position),),
+                text=item.text,
+                text_size=item.pixel_size,
+                item_id=item.item_id,
             )
             self._apply_annotation_command(self._annotations, command)
             self._record_annotation_command(command)
-            self.update()
+        else:
+            self._push_undo_state(previous_texts)
+            self._texts[item.item_id] = item
+        self.update()
+
+    def _remove_text(self, item_id: int) -> None:
+        """Delete one text item as a single undoable step."""
+        if item_id not in self._texts:
             return
-        self._push_undo_state()
-        painter = QPainter(self._annotations)
-        try:
-            font = QFont()
-            font.setPixelSize(self._native_pen_width(self._text_size))
-            font.setBold(True)
-            painter.setFont(font)
-            painter.setPen(self._annotation_color)
-            painter.drawText(point, text)
-        finally:
-            painter.end()
+        if self._lightweight_history:
+            command = _AnnotationCommand(
+                tool="text_delete",
+                color_rgba=0,
+                width=0,
+                item_id=item_id,
+            )
+            self._apply_annotation_command(self._annotations, command)
+            self._record_annotation_command(command)
+        else:
+            self._push_undo_state()
+            del self._texts[item_id]
         self.update()
 
     @staticmethod
-    def _text_dialog_position(anchor: QPoint, size: QSize, bounds: QRect) -> QPoint:
-        """Place the text prompt near its click while keeping it on that screen."""
-        margin = 12
-        x = anchor.x() + margin
-        y = anchor.y() + margin
-        if x + size.width() - 1 > bounds.right():
-            x = anchor.x() - size.width() - margin
-        if y + size.height() - 1 > bounds.bottom():
-            y = anchor.y() - size.height() - margin
-        x = max(bounds.left(), min(x, bounds.right() - size.width() + 1))
-        y = max(bounds.top(), min(y, bounds.bottom() - size.height() + 1))
-        return QPoint(x, y)
+    def _erase_texts(
+        texts: dict[int, _TextItem],
+        points: tuple[QPoint, ...],
+        width: int,
+    ) -> None:
+        """Remove every text item touched by an eraser stroke."""
+        if not texts or not points:
+            return
+        margin = max(1, width // 2)
+        segments = list(zip(points, points[1:])) or [(points[0], points[0])]
+        areas = [
+            QRect(start, end).normalized().adjusted(-margin, -margin, margin, margin)
+            for start, end in segments
+        ]
+        for item_id, item in list(texts.items()):
+            bounds = item.rect()
+            if any(area.intersects(bounds) for area in areas):
+                del texts[item_id]
+
+    def _drag_text_to(self, display_point: QPoint) -> None:
+        """Move the dragged text with the mouse, without recording history yet."""
+        item = self._texts.get(self._text_drag_id)
+        if item is None:
+            self._text_drag_id = 0
+            return
+        delta = display_point - self._text_drag_origin
+        if (
+            not self._text_drag_moved
+            and delta.manhattanLength() < self._TEXT_DRAG_THRESHOLD
+        ):
+            return
+        self._text_drag_moved = True
+        image_delta = self._to_image(display_point) - self._to_image(self._text_drag_origin)
+        self._texts[item.item_id] = replace(
+            item,
+            position=self._text_drag_start + image_delta,
+        )
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.update()
+
+    def _finish_text_drag(self, display_point: QPoint) -> None:
+        """Record a completed move, or open the text for editing after a click."""
+        item_id = self._text_drag_id
+        self._text_drag_id = 0
+        item = self._texts.get(item_id)
+        if item is None:
+            return
+        if self._text_drag_moved:
+            if self._lightweight_history:
+                self._store_text(item)
+            else:
+                self._store_text(item, self._text_drag_snapshot)
+        else:
+            self._begin_text_editing(item, item.position)
+        self._text_drag_snapshot = ()
+        self._text_drag_moved = False
+
+    def _ensure_text_editor(self) -> _InlineTextEdit:
+        if self._text_editor is None:
+            editor = _InlineTextEdit(self)
+            editor.setFrame(False)
+            editor.hide()
+            editor.textChanged.connect(self._fit_text_editor)
+            editor.editingFinished.connect(self._finish_text_editing)
+            editor.cancelled.connect(lambda: self._finish_text_editing(commit=False))
+            self._text_editor = editor
+        return self._text_editor
+
+    def _begin_text_editing(self, item: _TextItem | None, position: QPoint) -> None:
+        """Open the in-place text box for a new or an existing text item."""
+        editor = self._ensure_text_editor()
+        if item is None:
+            self._editing_text_id = 0
+            self._editing_color = QColor(self._annotation_color)
+            self._editing_pixel_size = self._native_pen_width(self._text_size)
+            text = ""
+        else:
+            self._editing_text_id = item.item_id
+            self._editing_color = QColor.fromRgba(item.color_rgba)
+            self._editing_pixel_size = item.pixel_size
+            text = item.text
+        self._selected_text_id = self._editing_text_id
+        self._editing_position = QPoint(position)
+        self._text_editing = True
+        editor.setText(text)
+        self._style_text_editor()
+        editor.show()
+        editor.raise_()
+        # The editor lives inside this canvas's own window, so it can never
+        # open behind a full-screen top-most screenshot or presentation layer.
+        self.window().activateWindow()
+        editor.setFocus(Qt.FocusReason.MouseFocusReason)
+        editor.setCursorPosition(len(text))
+        self.update()
+
+    def _style_text_editor(self) -> None:
+        """Match the text box font and color to the text being edited."""
+        editor = self._text_editor
+        if editor is None:
+            return
+        color = self._editing_color.name()
+        editor.setStyleSheet(
+            "QLineEdit {"
+            f" color: {color}; background-color: rgba(255, 255, 255, 215);"
+            " border: 1px dashed #2da9ff; padding: 0px; margin: 0px;"
+            " selection-color: #ffffff; selection-background-color: #1677c8; }"
+        )
+        editor.setFont(_text_font(self._display_text_size(self._editing_pixel_size)))
+        self._fit_text_editor()
+
+    def _fit_text_editor(self) -> None:
+        """Grow the text box with its content and keep text on the anchor."""
+        editor = self._text_editor
+        if editor is None:
+            return
+        metrics = QFontMetrics(editor.font())
+        width = metrics.horizontalAdvance(editor.text() or "  ") + 24
+        height = metrics.height() + 2 * self._TEXT_EDITOR_OFFSET.y()
+        editor.setGeometry(
+            QRect(
+                self._to_display(self._editing_position) - self._TEXT_EDITOR_OFFSET,
+                QSize(width, height),
+            )
+        )
+
+    def _finish_text_editing(self, commit: bool = True) -> None:
+        """Close the text box, saving its content unless editing was cancelled."""
+        if not self._text_editing:
+            return
+        self._text_editing = False
+        editor = self._text_editor
+        text = editor.text() if editor is not None else ""
+        item_id = self._editing_text_id
+        if editor is not None:
+            editor.hide()
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        if not commit:
+            self._forget_missing_selection()
+            self.update()
+            return
+        if not text.strip():
+            self._remove_text(item_id)
+            self._selected_text_id = 0
+            self.update()
+            return
+        if not item_id:
+            item_id = self._next_text_id
+            self._next_text_id += 1
+        item = _TextItem(
+            item_id,
+            QPoint(self._editing_position),
+            text,
+            self._editing_color.rgba(),
+            self._editing_pixel_size,
+        )
+        if self._texts.get(item_id) != item:
+            self._store_text(item)
+        self._selected_text_id = item_id
+        self.update()
 
     def _native_pen_width(self, display_width: int) -> int:
         if self.width() <= 0:

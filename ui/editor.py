@@ -92,7 +92,8 @@ class Editor(QDialog):
             self._canvas.redo()
             return
         if event.key() == Qt.Key.Key_Delete:
-            self._canvas.clear_annotations()
+            if not self._canvas.delete_selected_text():
+                self._canvas.clear_annotations()
             return
         if event.key() == Qt.Key.Key_Escape:
             self.reject()

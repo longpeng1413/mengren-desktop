@@ -98,7 +98,8 @@ class OverlayEditor(QDialog):
             self._frame.redo()
             return
         if event.key() == Qt.Key.Key_Delete:
-            self._frame.clear_annotations()
+            if not self._frame.delete_selected_text():
+                self._frame.clear_annotations()
             return
         if event.key() == Qt.Key.Key_Escape:
             self.reject()
