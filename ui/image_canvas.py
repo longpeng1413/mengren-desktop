@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from math import atan2, ceil, cos, floor, sin
 
-from PySide6.QtCore import QPoint, QRect, QSize, Signal, Qt
+from PySide6.QtCore import QPoint, QRect, QSize, QTimer, Signal, Qt
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -64,6 +64,7 @@ class _InlineTextEdit(QLineEdit):
     """In-place text box: Enter or clicking elsewhere finishes, Esc cancels."""
 
     cancelled = Signal()
+    finished = Signal()
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape:
@@ -74,6 +75,16 @@ class _InlineTextEdit(QLineEdit):
         super().keyPressEvent(event)
         if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
             event.accept()
+            self.finished.emit()
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        if event.reason() == Qt.FocusReason.MouseFocusReason:
+            # Qt moves focus before delivering the click. Let that click finish
+            # the text first, so it does not also open a new box where it landed.
+            QTimer.singleShot(0, self, self.finished.emit)
+            return
+        self.finished.emit()
 
 
 # Base image, raster annotations, display size and live text items.
@@ -1372,7 +1383,7 @@ class ImageCanvas(QWidget):
             editor.setFrame(False)
             editor.hide()
             editor.textChanged.connect(self._fit_text_editor)
-            editor.editingFinished.connect(self._finish_text_editing)
+            editor.finished.connect(self._finish_text_editing)
             editor.cancelled.connect(lambda: self._finish_text_editing(commit=False))
             self._text_editor = editor
         return self._text_editor

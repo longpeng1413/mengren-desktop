@@ -15,6 +15,40 @@ from ui.toolbar import EditorToolbar
 from ui.translation_worker import TranslationWorker
 
 
+def spanned_host_geometry(
+    selection: QRect,
+    screens: list[tuple[QRect, float]],
+) -> QRect | None:
+    """Return one window rectangle covering every screen the selection touches.
+
+    A window maximised across several monitors must stay editable in place, so
+    the editor spans all touched screens. Screens with different scaling do not
+    share one coordinate space, so ``None`` means no single window can host it.
+    """
+    touched = [(geometry, ratio) for geometry, ratio in screens if geometry.intersects(selection)]
+    if not touched:
+        return None
+    if len({round(ratio, 3) for _geometry, ratio in touched}) > 1:
+        return None
+    host = QRect(touched[0][0])
+    for geometry, _ratio in touched[1:]:
+        host = host.united(geometry)
+    return host
+
+
+def screen_layout() -> list[tuple[QRect, float]]:
+    """Return every screen's logical geometry and scaling factor."""
+    return [
+        (QRect(screen.geometry()), screen.devicePixelRatio())
+        for screen in QGuiApplication.screens()
+    ]
+
+
+def can_edit_in_place(selection: QRect) -> bool:
+    """Return whether one in-place editor window can show the whole selection."""
+    return spanned_host_geometry(selection, screen_layout()) is not None
+
+
 class OverlayEditor(QDialog):
     """Edits a normal screenshot directly over its source desktop position."""
 
@@ -30,9 +64,10 @@ class OverlayEditor(QDialog):
         if screen is None:
             screen = QGuiApplication.primaryScreen()
         self._host_screen = screen
-        self._host_geometry = (
-            QRect(screen.geometry()) if screen is not None else QRect(selection)
-        )
+        host = spanned_host_geometry(self._selection, screen_layout())
+        if host is None:
+            host = QRect(screen.geometry()) if screen is not None else QRect(selection)
+        self._host_geometry = host
         self._image = snapshot.crop(self._selection)
         self._pixmap = QPixmap.fromImage(self._image)
         self._resize_edge = ""
@@ -111,7 +146,7 @@ class OverlayEditor(QDialog):
         super().showEvent(event)
         # A Qt virtual desktop can contain physical screen positions together
         # with DPI-scaled screen sizes.  Never span that mixed coordinate space
-        # with one native window: keep the editor on the selection's own screen.
+        # with one native window: the host only spans screens of equal scaling.
         window = self.windowHandle()
         if window is not None and self._host_screen is not None:
             window.setScreen(self._host_screen)
@@ -211,9 +246,14 @@ class OverlayEditor(QDialog):
         if self._toolbar_user_position is not None:
             self._toolbar.move(self._toolbar_user_position)
             return
-        screen = QGuiApplication.screenAt(self._selection.center())
-        if screen is None:
-            screen = QGuiApplication.primaryScreen()
+        # A selection spanning several screens keeps the toolbar on the screen
+        # under its bottom edge, next to where the screenshot ends.
+        bottom_center = QPoint(self._selection.center().x(), self._selection.bottom())
+        screen = (
+            QGuiApplication.screenAt(bottom_center)
+            or QGuiApplication.screenAt(self._selection.center())
+            or QGuiApplication.primaryScreen()
+        )
         if screen is None:
             return
         bounds = screen.geometry()

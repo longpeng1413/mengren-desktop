@@ -1,8 +1,8 @@
 """Tests for in-place, movable, editable and recolorable text annotations."""
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtGui import QColor, QFocusEvent, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -154,6 +154,36 @@ def test_clicking_elsewhere_finishes_typing_without_a_new_box(canvas) -> None:
     QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=QPoint(300, 150))
 
     assert _only_text(canvas).text == "Done"
+    assert not canvas._text_editor.isVisible()
+
+
+def test_click_that_steals_focus_first_still_opens_no_new_box(canvas) -> None:
+    # In a focused window Qt takes focus from the text box before the click
+    # itself arrives; that order must not open a second, empty box.
+    QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=QPoint(50, 60))
+    canvas._text_editor.setText("Done")
+
+    QApplication.sendEvent(
+        canvas._text_editor,
+        QFocusEvent(QEvent.Type.FocusOut, Qt.FocusReason.MouseFocusReason),
+    )
+    QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=QPoint(300, 150))
+    QApplication.processEvents()
+
+    assert _only_text(canvas).text == "Done"
+    assert not canvas._text_editor.isVisible()
+
+
+def test_leaving_the_window_while_typing_keeps_the_text(canvas) -> None:
+    QTest.mouseClick(canvas, Qt.MouseButton.LeftButton, pos=QPoint(50, 60))
+    canvas._text_editor.setText("Kept")
+
+    QApplication.sendEvent(
+        canvas._text_editor,
+        QFocusEvent(QEvent.Type.FocusOut, Qt.FocusReason.ActiveWindowFocusReason),
+    )
+
+    assert _only_text(canvas).text == "Kept"
     assert not canvas._text_editor.isVisible()
 
 

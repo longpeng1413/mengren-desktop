@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication
 
 from core.capture.capture_service import CaptureService
 from core.capture.desktop_capture import DesktopSnapshot, MonitorSnapshot
+from ui.editor import Editor
 
 
 def test_f1_overlay_uses_one_native_pane_per_monitor() -> None:
@@ -59,3 +60,23 @@ def test_f1_overlay_uses_one_native_pane_per_monitor() -> None:
     )
 
     service._cancel_capture()
+
+
+def test_selection_across_mixed_scaling_opens_complete_separate_editor(monkeypatch) -> None:
+    _application = QApplication.instance() or QApplication([])
+    geometry = QRect(0, 0, 400, 200)
+    image = QImage(geometry.size(), QImage.Format.Format_ARGB32)
+    image.fill(QColor("#202020"))
+    snapshot = DesktopSnapshot(geometry, image)
+    selection = QRect(10, 10, 380, 180)
+    monkeypatch.setattr(
+        "ui.overlay_editor.screen_layout",
+        lambda: [(QRect(0, 0, 200, 200), 1.5), (QRect(200, 0, 200, 200), 1.0)],
+    )
+
+    service = CaptureService()
+    service._show_editor(snapshot.crop(selection), selection, snapshot)
+
+    assert isinstance(service._editor, Editor)
+    assert service._editor._image.size() == selection.size()
+    service._editor.reject()

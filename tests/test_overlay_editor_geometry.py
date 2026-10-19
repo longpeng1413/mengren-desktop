@@ -1,11 +1,11 @@
 """Tests for DPI-stable in-place screenshot editor positioning."""
 
-from PySide6.QtCore import QRect
+from PySide6.QtCore import QPoint, QRect
 from PySide6.QtGui import QColor, QImage, QPalette
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from core.capture.desktop_capture import DesktopSnapshot
-from ui.overlay_editor import OverlayEditor
+from ui.overlay_editor import OverlayEditor, spanned_host_geometry
 
 
 def test_error_message_keeps_readable_palette() -> None:
@@ -53,6 +53,10 @@ def test_editor_frame_uses_host_screen_local_coordinates(monkeypatch) -> None:
         "ui.overlay_editor.QGuiApplication.screenAt",
         lambda _point: HostScreen(),
     )
+    monkeypatch.setattr(
+        "ui.overlay_editor.screen_layout",
+        lambda: [(QRect(host_geometry), 1.5), (QRect(0, 0, 2560, 1440), 1.0)],
+    )
     editor = OverlayEditor(
         DesktopSnapshot(virtual_geometry, image),
         selection,
@@ -62,6 +66,59 @@ def test_editor_frame_uses_host_screen_local_coordinates(monkeypatch) -> None:
     assert editor._frame.geometry() == QRect(322, 267, 900, 520)
 
     editor.close()
+
+
+# The developer's 2x2 wall of 1920x1080 screens at 100% scaling.
+FOUR_SCREENS = [
+    (QRect(0, 0, 1920, 1080), 1.0),
+    (QRect(1920, 4, 1920, 1080), 1.0),
+    (QRect(1929, -1076, 1920, 1080), 1.0),
+    (QRect(9, -1080, 1920, 1080), 1.0),
+]
+
+
+def test_host_spans_every_screen_a_maximised_window_covers() -> None:
+    window = QRect(0, -1080, 3849, 2164)
+
+    assert spanned_host_geometry(window, FOUR_SCREENS) == QRect(0, -1080, 3849, 2164)
+    assert spanned_host_geometry(QRect(15, -1074, 3827, 1023), FOUR_SCREENS) == QRect(
+        9, -1080, 3840, 1084
+    )
+    assert spanned_host_geometry(QRect(100, 100, 400, 300), FOUR_SCREENS) == QRect(
+        0, 0, 1920, 1080
+    )
+
+
+def test_host_refuses_screens_with_different_scaling() -> None:
+    screens = [(QRect(0, 0, 2560, 1440), 1.5), (QRect(3840, 0, 1920, 1080), 1.0)]
+
+    assert spanned_host_geometry(QRect(2000, 100, 2500, 500), screens) is None
+    assert spanned_host_geometry(QRect(100, 100, 400, 300), screens) == QRect(0, 0, 2560, 1440)
+    assert spanned_host_geometry(QRect(-900, -900, 100, 100), screens) is None
+
+
+def test_window_across_four_screens_stays_whole_in_place(monkeypatch) -> None:
+    application = QApplication.instance() or QApplication([])
+    virtual_geometry = QRect(0, -1080, 3849, 2164)
+    image = QImage(virtual_geometry.size(), QImage.Format.Format_ARGB32)
+    image.fill(QColor("#202020"))
+    selection = QRect(15, -1074, 3827, 2150)
+    monkeypatch.setattr("ui.overlay_editor.screen_layout", lambda: list(FOUR_SCREENS))
+
+    editor = OverlayEditor(DesktopSnapshot(virtual_geometry, image), selection)
+    editor.show()
+    application.processEvents()
+
+    assert editor._host_geometry == virtual_geometry
+    assert editor._frame.geometry() == QRect(15, 6, 3827, 2150)
+    assert editor._frame.rendered_image().size() == selection.size()
+
+    # Dragging the left edge may reach the far screen instead of stopping at one.
+    widened = editor._resized_selection(selection, "left", QPoint(-100, 0))
+    assert widened.left() == 0
+    assert widened.right() == selection.right()
+
+    editor.reject()
 
 
 def test_cancel_closes_owned_floating_toolbar() -> None:

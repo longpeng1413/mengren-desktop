@@ -15,7 +15,7 @@ from ui.editor import Editor
 from ui.long_capture_controls import LongCaptureControls
 from ui.long_capture_frame import LongCaptureFrame
 from ui.multi_screen_overlay import MultiScreenOverlay
-from ui.overlay_editor import OverlayEditor
+from ui.overlay_editor import OverlayEditor, can_edit_in_place
 from ui.pinned_image import PinnedImageWindow
 from ui.presentation_overlay import PresentationOverlay
 
@@ -219,9 +219,15 @@ class CaptureService(QObject):
         placement: QRect | None = None,
         snapshot: DesktopSnapshot | None = None,
     ) -> None:
-        if placement is not None and snapshot is not None:
+        if (
+            placement is not None
+            and snapshot is not None
+            and can_edit_in_place(placement)
+        ):
             self._editor = OverlayEditor(snapshot, placement)
         else:
+            # Also used when a selection spans screens with different scaling:
+            # the separate editor window always shows the complete screenshot.
             self._editor = Editor(image)
         self._editor.finished.connect(self._clear_editor)
         self._editor.pin_requested.connect(self._show_pinned_image)
