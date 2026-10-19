@@ -19,20 +19,41 @@ def spanned_host_geometry(
     selection: QRect,
     screens: list[tuple[QRect, float]],
 ) -> QRect | None:
-    """Return one window rectangle covering every screen the selection touches.
+    """Return one window rectangle for editing the selection in place.
 
-    A window maximised across several monitors must stay editable in place, so
-    the editor spans all touched screens. Screens with different scaling do not
-    share one coordinate space, so ``None`` means no single window can host it.
+    It covers every screen the selection touches plus every other screen of the
+    same scaling, so a screenshot taken on one screen can still be dragged out
+    across the others. Screens with different scaling do not share one
+    coordinate space: they are left out, and ``None`` means the selection
+    itself crosses them so no single window can host it.
     """
     touched = [(geometry, ratio) for geometry, ratio in screens if geometry.intersects(selection)]
     if not touched:
         return None
-    if len({round(ratio, 3) for _geometry, ratio in touched}) > 1:
+    ratios = {round(ratio, 3) for _geometry, ratio in touched}
+    if len(ratios) > 1:
         return None
     host = QRect(touched[0][0])
     for geometry, _ratio in touched[1:]:
         host = host.united(geometry)
+
+    others = [geometry for geometry, ratio in screens if round(ratio, 3) not in ratios]
+    candidates = [
+        geometry
+        for geometry, ratio in screens
+        if round(ratio, 3) in ratios and not host.contains(geometry)
+    ]
+    grown = True
+    while grown:
+        grown = False
+        for geometry in list(candidates):
+            united = host.united(geometry)
+            # Never stretch the window over a screen with different scaling.
+            if any(united.intersects(other) for other in others):
+                continue
+            host = united
+            candidates.remove(geometry)
+            grown = True
     return host
 
 
