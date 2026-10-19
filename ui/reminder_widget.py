@@ -85,8 +85,8 @@ class ReminderLauncher(QWidget):
     display_mode_toggle_requested = Signal()
 
     _ACTIONS = (
-        ("文字贴图", "text"),
-        ("图片贴图", "image"),
+        ("贴文字", "text"),
+        ("贴图片", "image"),
         ("闹钟", "alarm"),
         ("计时器", "stopwatch"),
         ("倒计时", "countdown"),

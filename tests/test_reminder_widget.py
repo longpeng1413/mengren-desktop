@@ -112,8 +112,8 @@ def test_desktop_launcher_matches_f1_button_size_and_uses_larger_font() -> None:
         "calculator",
     }
     assert [button.text() for button in launcher.buttons.values()] == [
-        "文字贴图",
-        "图片贴图",
+        "贴文字",
+        "贴图片",
         "闹钟",
         "计时器",
         "倒计时",
