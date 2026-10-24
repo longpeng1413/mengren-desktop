@@ -11,8 +11,8 @@ from ui.main_window import MainWindow
 
 
 def test_release_uses_current_version_metadata() -> None:
-    assert APP_VERSION == "18.25"
-    assert APP_DISPLAY_NAME == "猛人桌面助手v18.25"
+    assert APP_VERSION == "18.26"
+    assert APP_DISPLAY_NAME == "猛人桌面助手v18.26"
 
 
 def test_hotkey_dialog_edits_capture_teacher_and_reminder() -> None:

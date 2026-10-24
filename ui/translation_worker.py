@@ -1,4 +1,4 @@
-"""Background OCR, batch translation, and image overlay work for the editor."""
+"""Background OCR, paragraph translation, and image overlay work for the editor."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from time import sleep
 from PySide6.QtCore import QObject, Signal, Slot
 from PySide6.QtGui import QImage
 
-from core.ocr.ocr_service import OcrLine, OcrService
+from core.ocr.ocr_service import OcrService
 from core.translate.base import (
     BatchTranslationUnavailable,
     TranslationError,
@@ -16,6 +16,7 @@ from core.translate.base import (
 )
 from core.translate.factory import create_translator
 from core.translate.image_overlay import ImageTranslationRenderer, OverlayTranslation
+from core.translate.text_blocks import TextBlock, group_text_blocks
 
 
 class TranslationWorker(QObject):
@@ -34,14 +35,17 @@ class TranslationWorker(QObject):
 
     @Slot()
     def run(self) -> None:
-        """Recognize, batch-translate, and render every recognized text line."""
+        """Recognize text, translate it paragraph by paragraph, and render it."""
         try:
             ocr_result = OcrService().recognize(self._image)
             if not ocr_result.lines:
                 raise TranslationError("没有识别到可翻译的文字，请重新选择更清晰的区域。")
 
+            # Whole paragraphs translate correctly; single OCR lines are often
+            # half sentences that a translator cannot understand.
+            blocks = group_text_blocks(ocr_result.lines, self._image)
             translator = create_translator()
-            translations = self._translate_all(translator, ocr_result.lines)
+            translations = self._translate_all(translator, blocks)
             translated_image = ImageTranslationRenderer().apply(self._image, translations)
             self.succeeded.emit(translated_image)
         except TranslationError as error:
@@ -54,21 +58,25 @@ class TranslationWorker(QObject):
     def _translate_all(
         self,
         translator: Translator,
-        lines: tuple[OcrLine, ...],
+        blocks: tuple[TextBlock, ...],
     ) -> tuple[OverlayTranslation, ...]:
         """Use one batch request, with a throttled compatibility fallback."""
-        source_texts = tuple(line.text for line in lines)
+        source_texts = tuple(block.text for block in blocks)
         try:
             translated_texts = self._translate_batch_with_retry(translator, source_texts)
-            return tuple(
-                OverlayTranslation(bounds=line.bounds, text=translated_text)
-                for line, translated_text in zip(lines, translated_texts)
-            )
         except BatchTranslationUnavailable:
-            return tuple(
-                self._translate_one_with_retry(translator, line, index)
-                for index, line in enumerate(lines)
+            translated_texts = tuple(
+                self._translate_one_with_retry(translator, text, index)
+                for index, text in enumerate(source_texts)
             )
+        return tuple(
+            OverlayTranslation(
+                bounds=block.bounds,
+                text=block.prefix + translated_text,
+                line_height=block.line_height,
+            )
+            for block, translated_text in zip(blocks, translated_texts)
+        )
 
     def _translate_batch_with_retry(
         self,
@@ -86,19 +94,17 @@ class TranslationWorker(QObject):
     def _translate_one_with_retry(
         self,
         translator: Translator,
-        line: OcrLine,
+        text: str,
         index: int,
-    ) -> OverlayTranslation:
+    ) -> str:
         """Keep old applications usable when the batch endpoint is unavailable."""
         if index:
             sleep(self._FALLBACK_INTERVAL_SECONDS)
 
         for retry_delay in self._RETRY_DELAYS_SECONDS:
             try:
-                result = translator.translate_to_chinese(line.text)
-                return OverlayTranslation(bounds=line.bounds, text=result.translated_text)
+                return translator.translate_to_chinese(text).translated_text
             except TranslationRateLimitError:
                 sleep(retry_delay)
 
-        result = translator.translate_to_chinese(line.text)
-        return OverlayTranslation(bounds=line.bounds, text=result.translated_text)
+        return translator.translate_to_chinese(text).translated_text
