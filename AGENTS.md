@@ -43,7 +43,14 @@ These rules apply to every future modification in this project.
 - To publish: build with `-Zip`, commit, tag `v<version>`, push, then
   `gh release create v<version>` with `dist\mengren-desktop-v<version>-windows-x64.zip` and
   `dist\SHA256SUMS.txt`, titled `猛人桌面助手 v<version> 正式版`.
+- After each release, install it for the developer: unzip it to `D:\yingyong\mengren-desktop-v<version>-windows-x64\`,
+  start it, check the Windows startup entry points at it (360 security may delete the entry), move the
+  previous version's folders and zip to the Recycle Bin, and point the desktop shortcut
+  `猛人桌面助手.lnk` at the new EXE (one shortcut, updated every release).
 - Do not deliver a release until tests pass, the build finishes without errors and the packaged
-  EXE starts. Always launch it with `scripts\smoke_test.ps1`, never by hand: a packaged EXE
-  re-points the developer's real Windows startup entry to itself, and the script saves and
-  restores every startup entry name this product has used.
+  EXE starts. Always launch it with `scripts\smoke_test.ps1`, never by hand: the developer's own
+  copy is usually running, so the script starts the test copy in smoke-test mode
+  (`MENGREN_SMOKE_TEST=1`: no shortcuts, no tray icon, no startup-entry change) with a temporary
+  `APPDATA` that it deletes afterwards, and still saves and restores every startup entry name.
+- Never stop or replace the developer's running copy without saying so first; when installing a
+  release, stop the old copy yourself before starting the new one so shortcuts never clash.

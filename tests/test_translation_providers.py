@@ -13,27 +13,20 @@ from core.translate.providers import (
 )
 
 
-class _Response:
-    def __init__(self, body: object) -> None:
-        self._body = json.dumps(body, ensure_ascii=False).encode("utf-8")
+def _reply(monkeypatch, body: object) -> list:
+    """Answer every request with ``body`` and return the requests sent."""
+    requests = []
 
-    def __enter__(self):
-        return self
+    def fake_open(_opener, request, _timeout):
+        requests.append(request)
+        return json.dumps(body, ensure_ascii=False).encode("utf-8")
 
-    def __exit__(self, *_args):
-        return False
-
-    def read(self) -> bytes:
-        return self._body
+    monkeypatch.setattr("core.translate.http._open", fake_open)
+    return requests
 
 
 def test_deepl_batch_translation(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "core.translate.providers.urlopen",
-        lambda *_args, **_kwargs: _Response(
-            {"translations": [{"text": "你好"}, {"text": "世界"}]}
-        ),
-    )
+    _reply(monkeypatch, {"translations": [{"text": "你好"}, {"text": "世界"}]})
 
     result = DeepLTranslator("secret").translate_many_to_chinese(("hello", "world"))
 
@@ -41,12 +34,7 @@ def test_deepl_batch_translation(monkeypatch) -> None:
 
 
 def test_google_batch_translation(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "core.translate.providers.urlopen",
-        lambda *_args, **_kwargs: _Response(
-            {"data": {"translations": [{"translatedText": "你好"}]}}
-        ),
-    )
+    _reply(monkeypatch, {"data": {"translations": [{"translatedText": "你好"}]}})
 
     result = GoogleTranslator("secret").translate_many_to_chinese(("hello",))
 
@@ -54,12 +42,7 @@ def test_google_batch_translation(monkeypatch) -> None:
 
 
 def test_microsoft_batch_translation(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "core.translate.providers.urlopen",
-        lambda *_args, **_kwargs: _Response(
-            [{"translations": [{"text": "你好", "to": "zh-Hans"}]}]
-        ),
-    )
+    _reply(monkeypatch, [{"translations": [{"text": "你好", "to": "zh-Hans"}]}])
 
     result = MicrosoftTranslator("secret", "eastasia").translate_many_to_chinese(
         ("hello",)
@@ -91,29 +74,18 @@ def test_factory_creates_selected_provider() -> None:
     assert isinstance(translator, OpenAITranslator)
 
 
-def _capture_requests(monkeypatch, body: object) -> list:
-    requests = []
-
-    def fake_urlopen(request, *_args, **_kwargs):
-        requests.append(request)
-        return _Response(body)
-
-    monkeypatch.setattr("core.translate.providers.urlopen", fake_urlopen)
-    return requests
-
-
 def test_english_source_is_named_for_mixed_chinese_text(monkeypatch) -> None:
-    requests = _capture_requests(monkeypatch, {"translations": [{"text": "从这里开始"}]})
+    requests = _reply(monkeypatch, {"translations": [{"text": "从这里开始"}]})
     DeepLTranslator("secret").translate_many_to_chinese(("Start at 老师",), "en")
     assert json.loads(requests[-1].data)["source_lang"] == "EN"
 
     DeepLTranslator("secret").translate_many_to_chinese(("hello",))
     assert "source_lang" not in json.loads(requests[-1].data)
 
-    requests = _capture_requests(monkeypatch, {"data": {"translations": [{"translatedText": "你好"}]}})
+    requests = _reply(monkeypatch, {"data": {"translations": [{"translatedText": "你好"}]}})
     GoogleTranslator("secret").translate_many_to_chinese(("Start at 老师",), "en")
     assert json.loads(requests[-1].data)["source"] == "en"
 
-    requests = _capture_requests(monkeypatch, [{"translations": [{"text": "你好"}]}])
+    requests = _reply(monkeypatch, [{"translations": [{"text": "你好"}]}])
     MicrosoftTranslator("secret", "").translate_many_to_chinese(("Start at 老师",), "en")
     assert "from=en" in requests[-1].full_url

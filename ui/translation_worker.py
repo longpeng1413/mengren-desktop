@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from time import sleep
 
 from PySide6.QtCore import QObject, Signal, Slot
@@ -17,6 +18,9 @@ from core.translate.base import (
 from core.translate.factory import create_translator
 from core.translate.image_overlay import ImageTranslationRenderer, OverlayTranslation
 from core.translate.text_blocks import TextBlock, group_text_blocks, han_count, source_language
+
+
+_log = logging.getLogger(__name__)
 
 
 class TranslationWorker(QObject):
@@ -49,9 +53,11 @@ class TranslationWorker(QObject):
             translated_image = ImageTranslationRenderer().apply(self._image, translations)
             self.succeeded.emit(translated_image)
         except TranslationError as error:
+            _log.warning("截图翻译失败：%s", error, exc_info=error.__cause__ is not None)
             self.failed.emit(str(error))
         except Exception:
-            self.failed.emit("识别或翻译失败，请重试。")
+            _log.exception("截图翻译出现意外错误")
+            self.failed.emit("识别或翻译失败，请重试。详细原因已写入日志，可在主窗口点“打开日志文件夹”查看。")
         finally:
             self.finished.emit()
 

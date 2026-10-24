@@ -35,9 +35,9 @@ class ApplicationTray(QSystemTrayIcon):
         hotkey_action = menu.addAction("修改快捷键")
         hotkey_action.triggered.connect(edit_hotkeys_callback)
         if reminder_callback is not None:
-            reminder_action = menu.addAction("桌面提醒")
+            reminder_action = menu.addAction("桌面工具")
             reminder_action.triggered.connect(reminder_callback)
-        translation_action = menu.addAction("翻译 API 设置")
+        translation_action = menu.addAction("翻译设置")
         translation_action.triggered.connect(edit_translation_callback)
         self._autostart_action = menu.addAction("开机自启动")
         self._autostart_action.setCheckable(True)
@@ -84,7 +84,7 @@ class ApplicationTray(QSystemTrayIcon):
             f"{settings.normal_capture} 截图：{normal}\n"
             f"{settings.long_capture} 纵向长截图：{long_capture}\n"
             f"{settings.presentation_mode or '未设置'} 教鞭模式：{presentation}\n"
-            f"{settings.reminder} 桌面提醒：{reminder}\n"
+            f"{settings.reminder} 桌面工具：{reminder}\n"
             f"{settings.calculator or '未设置'} 计算器开关：{calculator}\n"
             f"{settings.sleep or '未设置'} 计算机睡眠：{sleep}"
         )

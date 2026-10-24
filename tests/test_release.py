@@ -11,8 +11,8 @@ from ui.main_window import MainWindow
 
 
 def test_release_uses_current_version_metadata() -> None:
-    assert APP_VERSION == "18.27"
-    assert APP_DISPLAY_NAME == "猛人桌面助手v18.27"
+    assert APP_VERSION == "18.28"
+    assert APP_DISPLAY_NAME == "猛人桌面助手v18.28"
 
 
 def test_hotkey_dialog_edits_capture_teacher_and_reminder() -> None:
@@ -51,7 +51,7 @@ def test_main_window_has_no_horizontal_or_recording_actions() -> None:
     assert "普通截图" in labels
     assert "长截图" in labels
     assert "教鞭模式" in labels
-    assert "桌面提醒" in labels
+    assert "桌面工具" in labels
     assert "横向长截图" not in labels
     assert "录屏" not in labels
     assert "录屏设置" not in labels

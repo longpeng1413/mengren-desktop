@@ -43,7 +43,7 @@ class HotkeyDialog(QDialog):
         "normal_capture": "普通截图：",
         "long_capture": "纵向长截图：",
         "presentation_mode": "教鞭模式：",
-        "reminder": "桌面提醒：",
+        "reminder": "桌面工具：",
         "calculator": "打开/关闭计算器：",
         "sleep": "计算机睡眠：",
     }

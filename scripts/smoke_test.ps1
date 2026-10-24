@@ -1,8 +1,12 @@
 # Launch the packaged EXE for a few seconds and confirm it stays running.
 #
-# A packaged EXE re-points an existing Windows startup entry to itself on launch.
-# This script saves every startup entry this product has ever used and restores
-# them exactly afterwards, so testing never touches the developer's real setup.
+# The developer's own copy is usually running at the same time. The test copy
+# therefore runs in smoke-test mode (MENGREN_SMOKE_TEST=1): it registers no
+# shortcut, shows no tray icon and leaves the startup entry alone, so it never
+# reports shortcut conflicts. It also gets a temporary settings folder, deleted
+# afterwards, so it never shows the developer's desktop widgets twice or writes
+# their settings and logs. As a safety net, every startup entry this product has
+# ever used is still saved and restored exactly.
 param(
     [int]$Seconds = 12
 )
@@ -39,7 +43,17 @@ foreach ($name in $names) {
     }
 }
 
-$process = Start-Process -FilePath $exe.FullName -PassThru
+$sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("mengren-smoke-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $sandbox | Out-Null
+$previousAppData = $env:APPDATA
+$env:APPDATA = $sandbox
+$env:MENGREN_SMOKE_TEST = "1"
+try {
+    $process = Start-Process -FilePath $exe.FullName -PassThru
+} finally {
+    $env:APPDATA = $previousAppData
+    Remove-Item Env:MENGREN_SMOKE_TEST -ErrorAction SilentlyContinue
+}
 try {
     $exited = $process.WaitForExit($Seconds * 1000)
 } finally {
@@ -47,6 +61,7 @@ try {
         Stop-Process -Id $process.Id -Force
         Start-Sleep -Milliseconds 500
     }
+    Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
     foreach ($name in $names) {
         if ($saved.ContainsKey($name)) {
             Set-ItemProperty -Path $runKey -Name $name -Value $saved[$name]

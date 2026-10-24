@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+import time
+
 from app.config import YoudaoCredentials
 from app.translation_preferences import TranslationSettings, load_translation_settings
-from core.translate.base import TranslationError, Translator
+from core.translate.base import TranslationError, TranslationResult, Translator
+from core.translate.chatgpt_account import (
+    AccountQuotaExhausted,
+    AccountSignedOut,
+    ChatGPTAccountTranslator,
+    load_tokens,
+)
 from core.translate.providers import (
     DeepLTranslator,
     GoogleTranslator,
@@ -14,9 +23,64 @@ from core.translate.providers import (
 from core.translate.youdao import YoudaoTranslator
 
 
+_log = logging.getLogger(__name__)
+
+# After the plan quota runs out, skip the account for a while instead of
+# waiting for the same refusal on every screenshot.
+QUOTA_PAUSE_SECONDS = 30 * 60
+_account_paused_until = 0.0
+
+
+class AccountFirstTranslator:
+    """Translate on the ChatGPT plan quota; use the API service when that fails."""
+
+    def __init__(self, account: Translator, api: Translator) -> None:
+        self._account = account
+        self._api = api
+
+    def translate_to_chinese(self, text: str, source_language: str = "auto") -> TranslationResult:
+        if self._account_available():
+            try:
+                return self._account.translate_to_chinese(text, source_language)
+            except TranslationError as error:
+                self._note_failure(error)
+        return self._api.translate_to_chinese(text, source_language)
+
+    def translate_many_to_chinese(
+        self,
+        texts: tuple[str, ...],
+        source_language: str = "auto",
+    ) -> tuple[str, ...]:
+        if self._account_available():
+            try:
+                return self._account.translate_many_to_chinese(texts, source_language)
+            except TranslationError as error:
+                self._note_failure(error)
+        return self._api.translate_many_to_chinese(texts, source_language)
+
+    @staticmethod
+    def _account_available() -> bool:
+        return time.time() >= _account_paused_until
+
+    @staticmethod
+    def _note_failure(error: TranslationError) -> None:
+        global _account_paused_until
+        if isinstance(error, (AccountQuotaExhausted, AccountSignedOut)):
+            _account_paused_until = time.time() + QUOTA_PAUSE_SECONDS
+        _log.warning("ChatGPT 账号翻译失败，改用 API 翻译服务：%s", error)
+
+
 def create_translator(settings: TranslationSettings | None = None) -> Translator:
-    """Return the provider selected in the encrypted local settings."""
+    """Return the configured service, preceded by the ChatGPT account if chosen."""
     current = settings or load_translation_settings()
+    api = _api_translator(current)
+    if current.chatgpt_preferred and load_tokens() is not None:
+        return AccountFirstTranslator(ChatGPTAccountTranslator(current.chatgpt_model), api)
+    return api
+
+
+def _api_translator(current: TranslationSettings) -> Translator:
+    """Return the API service selected in the encrypted local settings."""
     if current.provider == "youdao":
         return YoudaoTranslator(
             YoudaoCredentials(current.youdao_app_key, current.youdao_app_secret)

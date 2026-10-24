@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
 from app.branding import APP_AUTOSTART_NAME, LEGACY_AUTOSTART_NAMES
 
 _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_log = logging.getLogger(__name__)
 
 
 def is_enabled() -> bool:
@@ -60,8 +62,11 @@ def set_enabled(enabled: bool) -> bool:
                     winreg.DeleteValue(key, APP_AUTOSTART_NAME)
                 except FileNotFoundError:
                     pass
-    except OSError:
+    except OSError as error:
+        _log.warning("开机自启动%s失败：%r", "开启" if enabled else "关闭", error)
         return False
+    # Recorded so a missing startup entry can be traced to when it changed.
+    _log.info("开机自启动已%s：%s", "开启" if enabled else "关闭", startup_command())
     return True
 
 

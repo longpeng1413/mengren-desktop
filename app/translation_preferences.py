@@ -21,6 +21,17 @@ PROVIDER_LABELS: tuple[tuple[str, str], ...] = (
 )
 
 
+# Models offered in the settings dropdown, best first, with a short reason.
+# Measured on real screenshots in October 2026: the small "nano" models leave
+# English words untranslated, so they are not offered.
+OPENAI_MODEL_CHOICES: tuple[tuple[str, str], ...] = (
+    ("gpt-6.1-sol", "推荐：译文最准确自然"),
+    ("gpt-6-sol", "译文好、速度快"),
+    ("gpt-5.6-luna", "更省钱，译文质量不错"),
+    ("gpt-6-luna", "最省钱，速度稍慢"),
+)
+
+
 @dataclass(frozen=True, slots=True)
 class TranslationSettings:
     """Provider choice and credentials stored only for the current Windows user."""
@@ -31,11 +42,14 @@ class TranslationSettings:
     deepl_api_key: str = ""
     deepl_use_free_api: bool = True
     openai_api_key: str = ""
-    openai_model: str = "gpt-5.6-luna"
+    openai_model: str = "gpt-6.1-sol"
     openai_base_url: str = "https://api.openai.com/v1"
     google_api_key: str = ""
     microsoft_api_key: str = ""
     microsoft_region: str = ""
+    # Translate on the signed-in ChatGPT plan quota first, then the API service.
+    chatgpt_preferred: bool = False
+    chatgpt_model: str = "gpt-6.1-sol"
 
 
 class _DataBlob(ctypes.Structure):
@@ -68,6 +82,16 @@ def save_translation_settings(settings: TranslationSettings) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(asdict(settings), ensure_ascii=False).encode("utf-8")
     path.write_bytes(_protect(payload))
+
+
+def protect_for_user(data: bytes) -> bytes:
+    """Encrypt bytes so only the current Windows account can read them."""
+    return _protect(data)
+
+
+def unprotect_for_user(data: bytes) -> bytes:
+    """Decrypt bytes written by :func:`protect_for_user`."""
+    return _unprotect(data)
 
 
 def _protect(data: bytes) -> bytes:

@@ -6,9 +6,9 @@ import hashlib
 import json
 import time
 import uuid
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from app.config import YoudaoCredentials, get_youdao_credentials
 from core.translate.base import (
@@ -17,6 +17,7 @@ from core.translate.base import (
     TranslationRateLimitError,
     TranslationResult,
 )
+from core.translate.http import NetworkError, read_response
 
 
 class YoudaoTranslator:
@@ -112,12 +113,17 @@ class YoudaoTranslator:
                 headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"},
                 method="POST",
             )
-            with urlopen(request, timeout=20) as response:
-                return json.loads(response.read().decode("utf-8"))
+            # Youdao is inside China: go direct first, the proxy only as fallback.
+            body = read_response(request, 20, prefer_direct=True)
+            return json.loads(body.decode("utf-8"))
         except HTTPError as error:
             raise TranslationError(f"有道翻译请求失败（HTTP {error.code}）。") from error
-        except URLError as error:
-            raise TranslationError("无法连接有道翻译服务，请检查网络后重试。") from error
+        except NetworkError as error:
+            raise TranslationError(
+                "连接有道翻译时网络被中断，已自动重试仍未成功，请稍后再试。"
+            ) from error
+        except (UnicodeError, ValueError) as error:
+            raise TranslationError("有道翻译返回了无法识别的数据。") from error
 
     def _raise_for_error(self, body: dict[str, object]) -> None:
         """Translate Youdao error codes into typed local exceptions."""

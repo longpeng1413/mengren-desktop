@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QApplication
 
-from app import autostart
+from app import autostart, logs
 from app.branding import APP_DISPLAY_NAME
 from app.hotkeys import GlobalHotkey
 from app.icon import application_icon
@@ -52,18 +53,32 @@ def _repair_startup_settings(settings: HotkeySettings) -> HotkeySettings:
     return settings
 
 
+SMOKE_TEST_VARIABLE = "MENGREN_SMOKE_TEST"
+
+
 def run() -> None:
     """Start the application with its tray icon and configurable global shortcuts."""
+    # scripts\smoke_test.ps1 starts a packaged build while the developer's own
+    # copy keeps running: register no shortcut, touch no startup entry and show
+    # no tray icon, so the test never fights the copy in use.
+    smoke_test = os.environ.get(SMOKE_TEST_VARIABLE) == "1"
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     app = QApplication(sys.argv)
     app.setApplicationName(APP_DISPLAY_NAME)
     app.setQuitOnLastWindowClosed(False)
+    logs.setup_logging()
+    # The tray app may run for weeks: clean old log files once a day as well.
+    log_cleanup = QTimer(app)
+    log_cleanup.setInterval(logs.CLEANUP_INTERVAL_MS)
+    log_cleanup.timeout.connect(logs.clean_logs)
+    log_cleanup.start()
     install_chinese_translation(app)
     icon = application_icon()
     app.setWindowIcon(icon)
-    autostart.refresh_registration()
+    if not smoke_test:
+        autostart.refresh_registration()
 
     loaded_settings = load_hotkey_settings()
     settings = _repair_startup_settings(loaded_settings)
@@ -202,7 +217,7 @@ def run() -> None:
         set_presentation_hotkeys_active
     )
 
-    registered = hotkeys.register()
+    registered = {} if smoke_test else hotkeys.register()
     window.set_hotkey_status(settings, registered)
     reminder_manager.restore()
 
@@ -211,9 +226,10 @@ def run() -> None:
     app.aboutToQuit.connect(reminder_manager.shutdown)
     app.aboutToQuit.connect(lambda: app.removeNativeEventFilter(hotkeys))
     app.aboutToQuit.connect(lambda: app.removeNativeEventFilter(presentation_hotkeys))
-    tray.show()
-    tray.show_ready_message(
-        settings,
-        registered,
-    )
+    if not smoke_test:
+        tray.show()
+        tray.show_ready_message(
+            settings,
+            registered,
+        )
     sys.exit(app.exec())
