@@ -104,6 +104,16 @@ class ApplicationTray(QSystemTrayIcon):
             6000,
         )
 
+    def show_already_running(self) -> None:
+        """Answer a second launch: show the window and say the app is running."""
+        self._show_window()
+        self.showMessage(
+            APP_DISPLAY_NAME,
+            "猛人桌面助手已经在运行，已为你打开主窗口。",
+            QSystemTrayIcon.MessageIcon.Information,
+            3000,
+        )
+
     def _handle_activation(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """Open the optional status window on a tray-icon click."""
         if reason in {

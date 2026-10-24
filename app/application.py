@@ -8,7 +8,7 @@ import sys
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QApplication
 
-from app import autostart, logs
+from app import autostart, logs, single_instance
 from app.branding import APP_DISPLAY_NAME
 from app.hotkeys import GlobalHotkey
 from app.icon import application_icon
@@ -68,6 +68,14 @@ def run() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_DISPLAY_NAME)
     app.setQuitOnLastWindowClosed(False)
+    # Opening the app again (for example from the desktop icon while it sits in
+    # the tray) only brings up the running copy's window; two copies would
+    # fight over every global shortcut.
+    instance_server = None
+    if not smoke_test:
+        if single_instance.notify_running_instance():
+            return
+        instance_server = single_instance.InstanceServer(parent=app)
     logs.setup_logging()
     # The tray app may run for weeks: clean old log files once a day as well.
     log_cleanup = QTimer(app)
@@ -174,6 +182,8 @@ def run() -> None:
         autostart.set_enabled,
         reminder_callback=reminder_manager.open_launcher,
     )
+    if instance_server is not None:
+        instance_server.show_requested.connect(tray.show_already_running)
     app.installNativeEventFilter(hotkeys)
     app.installNativeEventFilter(presentation_hotkeys)
 
