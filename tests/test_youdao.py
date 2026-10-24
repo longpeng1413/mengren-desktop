@@ -14,3 +14,14 @@ def test_v3_signature_is_stable() -> None:
     translator = YoudaoTranslator(YoudaoCredentials("app-key", "app-secret"))
     signature = translator._sign("hello", "salt", "123")
     assert signature == "6e45874bc44ed2889f37077afc864021f5cf28ab082f9fe307c6b41081f68755"
+
+
+def test_english_source_replaces_automatic_detection() -> None:
+    translator = YoudaoTranslator(YoudaoCredentials("app-key", "app-secret"))
+
+    automatic = dict(translator._common_fields("hello", "salt", "123"))
+    english = dict(translator._common_fields("hello", "salt", "123", "en"))
+
+    assert automatic["from"] == "auto"
+    assert english["from"] == "en"
+    assert english["to"] == "zh-CHS"

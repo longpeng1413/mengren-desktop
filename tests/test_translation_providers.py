@@ -89,3 +89,31 @@ def test_factory_creates_selected_provider() -> None:
     )
 
     assert isinstance(translator, OpenAITranslator)
+
+
+def _capture_requests(monkeypatch, body: object) -> list:
+    requests = []
+
+    def fake_urlopen(request, *_args, **_kwargs):
+        requests.append(request)
+        return _Response(body)
+
+    monkeypatch.setattr("core.translate.providers.urlopen", fake_urlopen)
+    return requests
+
+
+def test_english_source_is_named_for_mixed_chinese_text(monkeypatch) -> None:
+    requests = _capture_requests(monkeypatch, {"translations": [{"text": "从这里开始"}]})
+    DeepLTranslator("secret").translate_many_to_chinese(("Start at 老师",), "en")
+    assert json.loads(requests[-1].data)["source_lang"] == "EN"
+
+    DeepLTranslator("secret").translate_many_to_chinese(("hello",))
+    assert "source_lang" not in json.loads(requests[-1].data)
+
+    requests = _capture_requests(monkeypatch, {"data": {"translations": [{"translatedText": "你好"}]}})
+    GoogleTranslator("secret").translate_many_to_chinese(("Start at 老师",), "en")
+    assert json.loads(requests[-1].data)["source"] == "en"
+
+    requests = _capture_requests(monkeypatch, [{"translations": [{"text": "你好"}]}])
+    MicrosoftTranslator("secret", "").translate_many_to_chinese(("Start at 老师",), "en")
+    assert "from=en" in requests[-1].full_url

@@ -16,7 +16,7 @@ from core.translate.base import (
 )
 from core.translate.factory import create_translator
 from core.translate.image_overlay import ImageTranslationRenderer, OverlayTranslation
-from core.translate.text_blocks import TextBlock, group_text_blocks
+from core.translate.text_blocks import TextBlock, group_text_blocks, han_count, source_language
 
 
 class TranslationWorker(QObject):
@@ -60,42 +60,63 @@ class TranslationWorker(QObject):
         translator: Translator,
         blocks: tuple[TextBlock, ...],
     ) -> tuple[OverlayTranslation, ...]:
-        """Use one batch request, with a throttled compatibility fallback."""
-        source_texts = tuple(block.text for block in blocks)
-        try:
-            translated_texts = self._translate_batch_with_retry(translator, source_texts)
-        except BatchTranslationUnavailable:
-            translated_texts = tuple(
-                self._translate_one_with_retry(translator, text, index)
-                for index, text in enumerate(source_texts)
-            )
+        """Translate every non-Chinese paragraph so the whole image reads Chinese.
+
+        Paragraphs that are already Chinese are left untouched in the image.
+        English mixed with Chinese terms is sent as English, one request per
+        source language, and a result that came back less Chinese than its
+        source (translated the wrong way) is dropped, keeping the original.
+        """
+        groups: dict[str, list[int]] = {}
+        for index, block in enumerate(blocks):
+            language = source_language(block.text)
+            if language is not None:
+                groups.setdefault(language, []).append(index)
+        if not groups:
+            raise TranslationError("截图里的文字已经是中文，不需要翻译。")
+
+        translated: dict[int, str] = {}
+        for language, indexes in groups.items():
+            texts = tuple(blocks[index].text for index in indexes)
+            try:
+                results = self._translate_batch_with_retry(translator, texts, language)
+            except BatchTranslationUnavailable:
+                results = tuple(
+                    self._translate_one_with_retry(translator, text, position, language)
+                    for position, text in enumerate(texts)
+                )
+            translated.update(zip(indexes, results))
+
         return tuple(
             OverlayTranslation(
-                bounds=block.bounds,
-                text=block.prefix + translated_text,
-                line_height=block.line_height,
+                bounds=blocks[index].bounds,
+                text=blocks[index].prefix + text,
+                line_height=blocks[index].line_height,
             )
-            for block, translated_text in zip(blocks, translated_texts)
+            for index, text in sorted(translated.items())
+            if han_count(text) > han_count(blocks[index].text)
         )
 
     def _translate_batch_with_retry(
         self,
         translator: Translator,
         texts: tuple[str, ...],
+        language: str = "auto",
     ) -> tuple[str, ...]:
         """Retry a batched request only if the provider briefly rate-limits it."""
         for retry_delay in self._RETRY_DELAYS_SECONDS:
             try:
-                return translator.translate_many_to_chinese(texts)
+                return translator.translate_many_to_chinese(texts, language)
             except TranslationRateLimitError:
                 sleep(retry_delay)
-        return translator.translate_many_to_chinese(texts)
+        return translator.translate_many_to_chinese(texts, language)
 
     def _translate_one_with_retry(
         self,
         translator: Translator,
         text: str,
         index: int,
+        language: str = "auto",
     ) -> str:
         """Keep old applications usable when the batch endpoint is unavailable."""
         if index:
@@ -103,8 +124,8 @@ class TranslationWorker(QObject):
 
         for retry_delay in self._RETRY_DELAYS_SECONDS:
             try:
-                return translator.translate_to_chinese(text).translated_text
+                return translator.translate_to_chinese(text, language).translated_text
             except TranslationRateLimitError:
                 sleep(retry_delay)
 
-        return translator.translate_to_chinese(text).translated_text
+        return translator.translate_to_chinese(text, language).translated_text

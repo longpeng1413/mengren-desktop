@@ -126,8 +126,15 @@ def _continues(previous: _Row, row: _Row) -> bool:
     if not (left_aligned or centered):
         return False
     # A line that stops well short of the next one ended its paragraph,
-    # e.g. a "Checks:" heading or the last line of a list item.
-    if left_aligned and not centered and above.right() + 3 * height < below.right():
+    # e.g. a "Checks:" heading or the last line of a list item. Ragged-right
+    # lines inside one paragraph often differ by several words, so compare
+    # widths rather than a fixed distance.
+    if (
+        left_aligned
+        and not centered
+        and above.width() < 0.7 * below.width()
+        and above.right() + 3 * height < below.right()
+    ):
         return False
     return True
 
@@ -187,6 +194,42 @@ def _join(first: str, second: str) -> str:
     if _is_cjk(first[-1]) or _is_cjk(second[0]):
         return first + second
     return f"{first} {second}"
+
+
+_HAN = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
+_KANA_HANGUL = re.compile(r"[぀-ヿᄀ-ᇿ가-힯]")
+# Runs of letters from alphabetic scripts (Latin, Cyrillic, ...), not Han,
+# kana, hangul, digits or underscores.
+_FOREIGN_WORD = re.compile(
+    r"[^\W\d_぀-ヿᄀ-ᇿ㐀-䶿一-鿿가-힯豈-﫿]+"
+)
+
+
+def han_count(text: str) -> int:
+    """Count Chinese characters."""
+    return len(_HAN.findall(text))
+
+
+def source_language(text: str) -> str | None:
+    """Decide how a paragraph is translated so the result is entirely Chinese.
+
+    ``None`` means it is already Chinese (an English product name inside a
+    Chinese sentence does not count) or holds no words, so it stays as is.
+    ``"en"`` means English sentences mixing in Chinese terms: automatic
+    language detection could call them Chinese and translate them into English.
+    ``"auto"`` covers everything else, such as pure English or Japanese.
+    """
+    han = han_count(text)
+    syllables = len(_KANA_HANGUL.findall(text))
+    words = _FOREIGN_WORD.findall(text)
+    # One alphabetic word carries roughly the meaning of 1.5 Chinese characters.
+    foreign = syllables + 1.5 * len(words)
+    if foreign < 1.5 or foreign / (foreign + han) < 0.3:
+        return None
+    latin_words = sum(1 for word in words if word.isascii())
+    if han and not syllables and latin_words * 2 >= len(words):
+        return "en"
+    return "auto"
 
 
 def _is_cjk(character: str) -> bool:

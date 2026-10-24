@@ -28,14 +28,14 @@ class YoudaoTranslator:
     def __init__(self, credentials: YoudaoCredentials | None = None) -> None:
         self._credentials = credentials or get_youdao_credentials()
 
-    def translate_to_chinese(self, text: str) -> TranslationResult:
+    def translate_to_chinese(self, text: str, source_language: str = "auto") -> TranslationResult:
         """Translate one source string through Youdao's standard text API."""
         source_text = text.strip()
         self._require_credentials(source_text)
 
         salt = uuid.uuid4().hex
         curtime = str(int(time.time()))
-        payload = self._common_fields(source_text, salt, curtime)
+        payload = self._common_fields(source_text, salt, curtime, source_language)
         payload.append(("q", source_text))
         body = self._post(self.endpoint, payload)
         self._raise_for_error(body)
@@ -46,7 +46,11 @@ class YoudaoTranslator:
             raise TranslationError("有道翻译没有返回结果。")
         return TranslationResult(source_text, translated_text)
 
-    def translate_many_to_chinese(self, texts: tuple[str, ...]) -> tuple[str, ...]:
+    def translate_many_to_chinese(
+        self,
+        texts: tuple[str, ...],
+        source_language: str = "auto",
+    ) -> tuple[str, ...]:
         """Translate many OCR lines in one request for responsive image overlays."""
         source_texts = tuple(text.strip() for text in texts if text.strip())
         if not source_texts:
@@ -56,7 +60,7 @@ class YoudaoTranslator:
         salt = uuid.uuid4().hex
         curtime = str(int(time.time()))
         signature_input = "".join(source_texts)
-        payload = self._common_fields(signature_input, salt, curtime)
+        payload = self._common_fields(signature_input, salt, curtime, source_language)
         payload.extend(("q", text) for text in source_texts)
         body = self._post(self.batch_endpoint, payload)
 
@@ -81,10 +85,16 @@ class YoudaoTranslator:
         if not self._credentials.is_configured:
             raise TranslationError("未找到有道凭证，请检查项目根目录的 .env 文件。")
 
-    def _common_fields(self, signature_input: str, salt: str, curtime: str) -> list[tuple[str, str]]:
+    def _common_fields(
+        self,
+        signature_input: str,
+        salt: str,
+        curtime: str,
+        source_language: str = "auto",
+    ) -> list[tuple[str, str]]:
         """Build the shared official v3 request form fields."""
         return [
-            ("from", "auto"),
+            ("from", "en" if source_language == "en" else "auto"),
             ("to", "zh-CHS"),
             ("appKey", self._credentials.app_key),
             ("salt", salt),
