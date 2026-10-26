@@ -15,6 +15,7 @@ class ToolbarDragHandle(QPushButton):
     def __init__(self, text: str = "移动", parent=None) -> None:
         super().__init__(text, parent)
         self._drag_offset: QPoint | None = None
+        self.setObjectName("dragHandle")
         self.setCursor(Qt.CursorShape.SizeAllCursor)
         self.setToolTip("按住这里拖动工具栏")
 

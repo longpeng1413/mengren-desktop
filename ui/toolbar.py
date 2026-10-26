@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui import theme
 from ui.color_picker import pick_color
 from ui.toolbar_drag_handle import ToolbarDragHandle
 
@@ -60,48 +61,7 @@ class EditorToolbar(QWidget):
         self._color = QColor("#ff3b30")
         self._active_tool = "select"
         self.setObjectName("editorToolbar")
-        self.setStyleSheet(
-            """
-            #editorToolbar {
-                background-color: rgba(22, 25, 29, 238);
-                border: 1px solid #66717d;
-                border-radius: 7px;
-            }
-            #editorToolbar QPushButton, #editorToolbar QToolButton {
-                color: #f5f7fa;
-                background-color: #303841;
-                border: 1px solid #7b8794;
-                border-radius: 4px;
-                font-size: 13px;
-                font-weight: 600;
-                padding: 0px;
-            }
-            #editorToolbar QPushButton:hover, #editorToolbar QToolButton:hover {
-                background-color: #1677c8;
-                border-color: #71c7ff;
-            }
-            #editorToolbar QPushButton:checked, #editorToolbar QToolButton:checked {
-                background-color: #0c6aa8;
-                border-color: #84d2ff;
-            }
-            #editorToolbar QPushButton:pressed, #editorToolbar QToolButton:pressed {
-                background-color: #0c5f9f;
-            }
-            #editorToolbar QPushButton:disabled, #editorToolbar QToolButton:disabled {
-                color: #9aa4af;
-                background-color: #252b31;
-                border-color: #4b5560;
-            }
-            #editorToolbar QToolButton::menu-indicator { image: none; }
-            QMenu {
-                color: #f5f7fa;
-                background-color: #252b31;
-                border: 1px solid #66717d;
-            }
-            QMenu::item { padding: 5px 22px 5px 10px; }
-            QMenu::item:selected { background-color: #1677c8; }
-            """
-        )
+        self.setStyleSheet(theme.toolbar_style("editorToolbar", 13))
 
         self.drag_handle = ToolbarDragHandle("移动", self) if movable else None
         if self.drag_handle is not None:
@@ -129,6 +89,7 @@ class EditorToolbar(QWidget):
         self.save_button = QPushButton("保存")
         self.translate_button = QPushButton("翻译")
         self.cancel_button = QPushButton("取消")
+        self.cancel_button.setObjectName("dangerButton")
 
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(4, 4, 4, 4)
@@ -166,6 +127,12 @@ class EditorToolbar(QWidget):
         self._update_color_indicator()
         self._select_tool("select")
         self.text_size_changed.emit(24)
+
+    def showEvent(self, event) -> None:
+        """Round the floating toolbar's corners like the main window's cards."""
+        super().showEvent(event)
+        if self.isWindow():
+            theme.round_corners(self)
 
     def set_apply_mode(self, enabled: bool) -> None:
         """Use the pin action as an Apply action while editing an existing sticker."""

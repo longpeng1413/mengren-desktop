@@ -58,7 +58,9 @@ from app.reminder_preferences import (
     save_reminders,
 )
 from app.system_actions import open_calculator, put_computer_to_sleep
+from ui import theme
 from ui.color_picker import pick_color
+from ui.translator_window import TranslatorWindow
 
 
 def _parse_datetime(value: str) -> datetime | None:
@@ -87,6 +89,7 @@ class ReminderLauncher(QWidget):
     _ACTIONS = (
         ("贴文字", "text"),
         ("贴图片", "image"),
+        ("翻译", "translate"),
         ("闹钟", "alarm"),
         ("计时器", "stopwatch"),
         ("倒计时", "countdown"),
@@ -107,25 +110,19 @@ class ReminderLauncher(QWidget):
         )
         self.setObjectName("reminderLauncher")
         self.setStyleSheet(
-            """
-            #reminderLauncher {
-                background: rgba(25, 29, 34, 245);
-                border: 1px solid #73808d; border-radius: 4px;
-            }
-            QPushButton {
-                color: #f7f9fb; background: #34404b;
-                border: 1px solid #85919d; border-radius: 2px;
+            theme.toolbar_style("reminderLauncher", 13)
+            + """
+            #reminderLauncher QPushButton {
                 min-width: 48px; max-width: 48px;
                 min-height: 32px; max-height: 32px;
-                font-size: 13px; font-weight: 700;
             }
-            QPushButton:hover { background: #1677c8; }
             """
         )
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(3)
         self.drag_handle = QPushButton("移动")
+        self.drag_handle.setObjectName("dragHandle")
         self.drag_handle.setCursor(Qt.CursorShape.SizeAllCursor)
         self.drag_handle.setToolTip("按住并拖动桌面工具栏")
         self.drag_handle.installEventFilter(self)
@@ -145,9 +142,15 @@ class ReminderLauncher(QWidget):
             layout.addWidget(button)
             self.buttons[kind] = button
         self.exit_button = QPushButton("退出")
+        self.exit_button.setObjectName("dangerButton")
         self.exit_button.setToolTip("关闭桌面工具栏（不关闭已创建的挂件）")
         self.exit_button.clicked.connect(self.hide)
         layout.addWidget(self.exit_button)
+
+    def showEvent(self, event) -> None:
+        """Round the toolbar's corners like the main window's cards."""
+        super().showEvent(event)
+        theme.round_corners(self)
 
     def set_always_on_top_mode(self, enabled: bool) -> None:
         """Show the current shared reminder display mode on the toggle button."""
@@ -1346,6 +1349,7 @@ class DesktopReminderManager:
             for item in load_reminders()
         }
         self._widgets: dict[str, DesktopReminderWidget] = {}
+        self._translator: TranslatorWindow | None = None
         self._launcher = ReminderLauncher()
         self._launcher.action_requested.connect(self._create_action)
         self._launcher.display_mode_toggle_requested.connect(
@@ -1392,11 +1396,20 @@ class DesktopReminderManager:
             return
         self._launcher.show_launcher()
 
+    def open_translator(self) -> None:
+        """Show the text translator, created on first use."""
+        if self._translator is None:
+            self._translator = TranslatorWindow()
+        self._translator.open()
+
     def open_editor(self) -> None:
         """Backward-compatible name used by older launcher wiring."""
         self.open_launcher()
 
     def _create_action(self, kind: str) -> None:
+        if kind == "translate":
+            self.open_translator()
+            return
         if kind == "calculator":
             if not self._calculator_handler():
                 QMessageBox.warning(self._parent, APP_DISPLAY_NAME, "无法打开计算器。")

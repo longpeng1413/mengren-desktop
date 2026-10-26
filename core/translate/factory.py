@@ -37,26 +37,41 @@ class AccountFirstTranslator:
     def __init__(self, account: Translator, api: Translator) -> None:
         self._account = account
         self._api = api
+        # The service that produced the latest result, shown to the user.
+        self.service_name = getattr(account, "service_name", "ChatGPT 账号")
+
+    def translate_many(
+        self,
+        texts: tuple[str, ...],
+        target: str = "zh",
+        source: str = "auto",
+    ) -> tuple[str, ...]:
+        return self._call("translate_many", texts, target, source)
+
+    def translate_one(self, text: str, target: str = "zh", source: str = "auto") -> str:
+        return self._call("translate_one", text, target, source)
 
     def translate_to_chinese(self, text: str, source_language: str = "auto") -> TranslationResult:
-        if self._account_available():
-            try:
-                return self._account.translate_to_chinese(text, source_language)
-            except TranslationError as error:
-                self._note_failure(error)
-        return self._api.translate_to_chinese(text, source_language)
+        return self._call("translate_to_chinese", text, source_language)
 
     def translate_many_to_chinese(
         self,
         texts: tuple[str, ...],
         source_language: str = "auto",
     ) -> tuple[str, ...]:
+        return self._call("translate_many_to_chinese", texts, source_language)
+
+    def _call(self, method: str, *arguments):
         if self._account_available():
             try:
-                return self._account.translate_many_to_chinese(texts, source_language)
+                result = getattr(self._account, method)(*arguments)
+                self.service_name = getattr(self._account, "service_name", "ChatGPT 账号")
+                return result
             except TranslationError as error:
                 self._note_failure(error)
-        return self._api.translate_many_to_chinese(texts, source_language)
+        result = getattr(self._api, method)(*arguments)
+        self.service_name = getattr(self._api, "service_name", "翻译服务")
+        return result
 
     @staticmethod
     def _account_available() -> bool:

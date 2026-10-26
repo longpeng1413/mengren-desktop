@@ -7,6 +7,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QHBoxLayout, QMenu, QPushButton, QToolButton, QWidget
 
 from app.preferences import PresentationShortcutSettings
+from ui import theme
 from ui.color_picker import pick_color
 from ui.toolbar_drag_handle import ToolbarDragHandle
 
@@ -45,25 +46,7 @@ class PresentationToolbar(QWidget):
         self._color = QColor("#ff3b30")
         self.setObjectName("presentationToolbar")
         self.setCursor(Qt.CursorShape.ArrowCursor)
-        self.setStyleSheet(
-            """
-            #presentationToolbar {
-                background-color: rgba(22, 25, 29, 242);
-                border: 1px solid #66717d; border-radius: 7px;
-            }
-            #presentationToolbar QPushButton, #presentationToolbar QToolButton {
-                color: #f5f7fa; background-color: #303841;
-                border: 1px solid #7b8794; border-radius: 4px;
-                font-size: 16px; font-weight: 700; padding: 0px;
-            }
-            #presentationToolbar QPushButton:hover, #presentationToolbar QToolButton:hover { background-color: #1677c8; }
-            #presentationToolbar QPushButton:checked, #presentationToolbar QToolButton:checked { background-color: #0c6aa8; }
-            #presentationToolbar QToolButton::menu-indicator { image: none; }
-            QMenu { color: #f5f7fa; background-color: #252b31; border: 1px solid #66717d; }
-            QMenu::item { padding: 5px 22px 5px 10px; }
-            QMenu::item:selected { background-color: #1677c8; }
-            """
-        )
+        self.setStyleSheet(theme.toolbar_style("presentationToolbar", 16))
 
         self.drag_handle = ToolbarDragHandle("移动", self)
         self.drag_handle.moved.connect(self.position_changed.emit)
@@ -92,6 +75,7 @@ class PresentationToolbar(QWidget):
         self.color_button = QPushButton("颜色")
         self.color_button.clicked.connect(self._choose_color)
         self.close_button = QPushButton("退出")
+        self.close_button.setObjectName("dangerButton")
         self.close_button.clicked.connect(self.close_requested.emit)
 
         drawing_buttons = (
@@ -136,6 +120,12 @@ class PresentationToolbar(QWidget):
         self.set_active_tool("brush")
         self._update_color_indicator()
 
+
+    def showEvent(self, event) -> None:
+        """Round the floating window's corners like the main window's cards."""
+        super().showEvent(event)
+        if self.isWindow():
+            theme.round_corners(self)
     def set_shortcuts(self, shortcuts: PresentationShortcutSettings) -> None:
         """Display current configurable shortcuts as button tooltips."""
         self.pointer_button.setToolTip(f"鼠标/画笔切换：{shortcuts.pointer_brush_toggle}")

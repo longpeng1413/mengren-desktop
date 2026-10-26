@@ -36,7 +36,7 @@ from app.branding import PRODUCT_NAME
 from app.translation_preferences import protect_for_user, unprotect_for_user
 from core.translate.base import BatchTranslator, TranslationError
 from core.translate.http import NetworkError, read_response
-from core.translate.providers import TRANSLATION_INSTRUCTIONS, parse_translations, translation_prompt
+from core.translate.providers import parse_translations, translation_instructions, translation_prompt
 
 _log = logging.getLogger(__name__)
 
@@ -328,12 +328,15 @@ class LoginSession:
 class ChatGPTAccountTranslator(BatchTranslator):
     """Translate through the signed-in ChatGPT plan, like Codex does."""
 
+    service_name = "ChatGPT 账号"
+
     def __init__(self, model: str) -> None:
         self._model = model.strip() or "gpt-6.1-sol"
 
-    def translate_many_to_chinese(
+    def translate_many(
         self,
         texts: tuple[str, ...],
+        target: str = "zh",
         source_language: str = "auto",
     ) -> tuple[str, ...]:
         source = tuple(text.strip() for text in texts if text.strip())
@@ -342,7 +345,7 @@ class ChatGPTAccountTranslator(BatchTranslator):
         tokens = fresh_tokens()
         body = {
             "model": self._model,
-            "instructions": TRANSLATION_INSTRUCTIONS,
+            "instructions": translation_instructions(target, source_language),
             "input": [
                 {
                     "type": "message",

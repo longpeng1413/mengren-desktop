@@ -236,7 +236,7 @@ class _Fixed(BatchTranslator):
         self._reply = reply
         self._error = error
 
-    def translate_many_to_chinese(self, texts, source_language="auto"):
+    def translate_many(self, texts, target="zh", source="auto"):
         self.calls += 1
         if self._error is not None:
             raise self._error

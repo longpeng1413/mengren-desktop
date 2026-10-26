@@ -9,6 +9,8 @@ from PySide6.QtCore import QRect, Signal, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
+from ui import theme
+
 
 class LongCaptureControls(QWidget):
     """Allow automatic/manual switching and explicit safe completion."""
@@ -30,16 +32,11 @@ class LongCaptureControls(QWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setObjectName("longCaptureControls")
         self.setStyleSheet(
-            "QWidget { background: #20252b; color: #f6f8fa; }"
-            "QLabel { padding: 0 4px; }"
-            "QPushButton { background: #34404b; color: white; "
-            "border: 1px solid #85919d; border-radius: 4px; "
-            "min-height: 28px; padding: 0 10px; font-size: 13px; "
-            "font-weight: 700; }"
-            "QPushButton:hover { background: #1677c8; }"
-            "QPushButton#finishButton { background: #147d44; border-color: #5fd38a; }"
-            "QPushButton#cancelButton { background: #8f3038; border-color: #ff7379; }"
+            theme.toolbar_style("longCaptureControls", 13)
+            + "#longCaptureControls QLabel { padding: 0 4px; }"
+            "#longCaptureControls QPushButton { min-height: 28px; padding: 0 12px; }"
         )
 
         self.status_label = QLabel("自动长截图：准备滚动")
@@ -47,8 +44,8 @@ class LongCaptureControls(QWidget):
         self.pause_button = QPushButton("暂停")
         self.finish_button = QPushButton("完成（F2）")
         self.cancel_button = QPushButton("取消")
-        self.finish_button.setObjectName("finishButton")
-        self.cancel_button.setObjectName("cancelButton")
+        self.finish_button.setObjectName("primaryButton")
+        self.cancel_button.setObjectName("dangerButton")
         self.mode_button.setToolTip("切换自动分段滚动或手动滚轮模式")
         self.pause_button.setToolTip("暂停或继续长截图")
         self.finish_button.setToolTip("在当前位置生成已经验证的长截图")
@@ -69,6 +66,12 @@ class LongCaptureControls(QWidget):
         self.adjustSize()
         self._place_near(selection)
 
+
+    def showEvent(self, event) -> None:
+        """Round the floating window's corners like the main window's cards."""
+        super().showEvent(event)
+        if self.isWindow():
+            theme.round_corners(self)
     def exclude_from_capture(self) -> bool:
         """Ask Windows to keep the helper bar out of captured pixels."""
         if sys.platform != "win32":
@@ -84,7 +87,7 @@ class LongCaptureControls(QWidget):
         self._place_near(self._selection)
 
     def show_attention(self, text: str) -> None:
-        self.status_label.setStyleSheet("color: #ffcf4a; font-weight: 700;")
+        self.status_label.setStyleSheet(f"color: {theme.WARNING}; font-weight: 700;")
         self.status_label.setText(text)
         self.adjustSize()
         self._place_near(self._selection)

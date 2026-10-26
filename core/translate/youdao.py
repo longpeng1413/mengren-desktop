@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 from urllib.request import Request
 
 from app.config import YoudaoCredentials, get_youdao_credentials
+from core.translate import languages
 from core.translate.base import (
     BatchTranslationUnavailable,
     TranslationError,
@@ -21,22 +22,23 @@ from core.translate.http import NetworkError, read_response
 
 
 class YoudaoTranslator:
-    """Translates text to Simplified Chinese through Youdao."""
+    """Translates text through Youdao's official v3 API."""
 
+    service_name = "有道翻译"
     endpoint = "https://openapi.youdao.com/api"
     batch_endpoint = "https://openapi.youdao.com/v2/api"
 
     def __init__(self, credentials: YoudaoCredentials | None = None) -> None:
         self._credentials = credentials or get_youdao_credentials()
 
-    def translate_to_chinese(self, text: str, source_language: str = "auto") -> TranslationResult:
-        """Translate one source string through Youdao's standard text API."""
+    def translate_one(self, text: str, target: str = "zh", source: str = "auto") -> str:
+        """Translate one passage through Youdao's standard text API."""
         source_text = text.strip()
         self._require_credentials(source_text)
 
         salt = uuid.uuid4().hex
         curtime = str(int(time.time()))
-        payload = self._common_fields(source_text, salt, curtime, source_language)
+        payload = self._common_fields(source_text, salt, curtime, source, target)
         payload.append(("q", source_text))
         body = self._post(self.endpoint, payload)
         self._raise_for_error(body)
@@ -45,12 +47,13 @@ class YoudaoTranslator:
         translated_text = "\n".join(str(part) for part in translated_parts).strip()
         if not translated_text:
             raise TranslationError("有道翻译没有返回结果。")
-        return TranslationResult(source_text, translated_text)
+        return translated_text
 
-    def translate_many_to_chinese(
+    def translate_many(
         self,
         texts: tuple[str, ...],
-        source_language: str = "auto",
+        target: str = "zh",
+        source: str = "auto",
     ) -> tuple[str, ...]:
         """Translate many OCR lines in one request for responsive image overlays."""
         source_texts = tuple(text.strip() for text in texts if text.strip())
@@ -61,7 +64,7 @@ class YoudaoTranslator:
         salt = uuid.uuid4().hex
         curtime = str(int(time.time()))
         signature_input = "".join(source_texts)
-        payload = self._common_fields(signature_input, salt, curtime, source_language)
+        payload = self._common_fields(signature_input, salt, curtime, source, target)
         payload.extend(("q", text) for text in source_texts)
         body = self._post(self.batch_endpoint, payload)
 
@@ -79,6 +82,17 @@ class YoudaoTranslator:
             raise BatchTranslationUnavailable("有道批量翻译返回不完整，正在切换兼容模式。")
         return translations
 
+    def translate_to_chinese(self, text: str, source_language: str = "auto") -> TranslationResult:
+        """Translate one source string to Simplified Chinese."""
+        return TranslationResult(text.strip(), self.translate_one(text, "zh", source_language))
+
+    def translate_many_to_chinese(
+        self,
+        texts: tuple[str, ...],
+        source_language: str = "auto",
+    ) -> tuple[str, ...]:
+        return self.translate_many(texts, "zh", source_language)
+
     def _require_credentials(self, source_text: str) -> None:
         """Validate the local credentials and source text before a request."""
         if not source_text:
@@ -92,11 +106,12 @@ class YoudaoTranslator:
         salt: str,
         curtime: str,
         source_language: str = "auto",
+        target: str = "zh",
     ) -> list[tuple[str, str]]:
         """Build the shared official v3 request form fields."""
         return [
-            ("from", "en" if source_language == "en" else "auto"),
-            ("to", "zh-CHS"),
+            ("from", languages.youdao_code(source_language)),
+            ("to", languages.youdao_code(target)),
             ("appKey", self._credentials.app_key),
             ("salt", salt),
             ("signType", "v3"),

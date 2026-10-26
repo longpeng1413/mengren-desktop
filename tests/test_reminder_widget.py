@@ -105,6 +105,7 @@ def test_desktop_launcher_matches_f1_button_size_and_uses_larger_font() -> None:
     assert set(launcher.buttons) == {
         "text",
         "image",
+        "translate",
         "alarm",
         "stopwatch",
         "countdown",
@@ -114,6 +115,7 @@ def test_desktop_launcher_matches_f1_button_size_and_uses_larger_font() -> None:
     assert [button.text() for button in launcher.buttons.values()] == [
         "贴文字",
         "贴图片",
+        "翻译",
         "闹钟",
         "计时器",
         "倒计时",

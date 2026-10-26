@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 from app.preferences import PresentationShortcutSettings
 from ui.drawing_cursors import brush_cursor
 from ui import presentation_overlay as presentation_overlay_module
+from ui import theme
 from ui.presentation_overlay import PresentationOverlay
 
 
@@ -205,7 +206,8 @@ def test_presentation_toolbar_uses_requested_single_row_order() -> None:
         "清除",
         "退出",
     ]
-    assert "rgba(22, 25, 29, 242)" in toolbar.styleSheet()
+    assert theme.PANEL in toolbar.styleSheet()
+    assert theme.ACCENT in toolbar.styleSheet()
     assert not toolbar.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     assert toolbar.sizeHint().height() < 50
     overlay.close()
