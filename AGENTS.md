@@ -40,6 +40,8 @@ These rules apply to every future modification in this project.
   `dist\猛人桌面助手v<version>正式版\` (EXE + docs at the top, runtime in `_internal`).
   The script deletes Qt parts the app never loads; after upgrading PySide6, check no remaining
   binary imports a deleted DLL before trusting the list.
+- The developer sometimes edits files (such as README.md) directly on GitHub: run `git fetch` and
+  merge `origin/main` before committing a release, keep their edits, and never force-push.
 - To publish: build with `-Zip`, commit, tag `v<version>`, push, then
   `gh release create v<version>` with `dist\mengren-desktop-v<version>-windows-x64.zip` and
   `dist\SHA256SUMS.txt`, titled `猛人桌面助手 v<version> 正式版`.
