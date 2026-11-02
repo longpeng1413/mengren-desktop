@@ -32,11 +32,18 @@ def _release(version: str = "18.40", sums: bool = True) -> ReleaseInfo:
 
 
 class _Response:
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, status: int = 200, drop_after: int | None = None) -> None:
         self._stream = io.BytesIO(data)
+        self._drop_after = drop_after
+        self.status = status
         self.headers = {"Content-Length": str(len(data))}
 
     def read(self, size: int = -1) -> bytes:
+        if self._drop_after is not None and (size < 0 or self._stream.tell() >= self._drop_after):
+            # Like a real socket: reading past the cut raises instead of returning less.
+            raise ConnectionResetError(10054, "远程主机强迫关闭了一个现有的连接。")
+        if self._drop_after is not None:
+            size = min(size, self._drop_after - self._stream.tell())
         return self._stream.read(size)
 
     def __enter__(self):
@@ -47,7 +54,7 @@ class _Response:
 
 
 def _serve(monkeypatch, files: dict[str, bytes]) -> None:
-    monkeypatch.setattr(update, "_open", lambda url, _timeout: _Response(files[url]))
+    monkeypatch.setattr(update, "_open", lambda url, _timeout, _headers=None: _Response(files[url]))
 
 
 def _zip_bytes(version: str, extra: str | None = None) -> bytes:
@@ -130,6 +137,57 @@ def test_cancelling_leaves_no_partial_file(monkeypatch, tmp_path) -> None:
 
     with pytest.raises(UpdateCancelled):
         update.download(release, cancelled=lambda: True)
+    assert not any((tmp_path / "dl").iterdir())
+
+
+def _flaky_server(monkeypatch, release, data: bytes, drops: int, ranges: bool = True) -> list:
+    """Serve ``data``, cutting the connection mid-way ``drops`` times."""
+    requests = []
+    digest = hashlib.sha256(data).hexdigest()
+
+    def fake_open(url, _timeout, headers=None):
+        if url == release.sums_url:
+            return _Response(f"{digest}  {release.zip_name}".encode())
+        requests.append(dict(headers or {}))
+        start = int(headers["Range"][6:-1]) if headers and ranges else 0
+        body = data[start:]
+        drop = len(body) // 2 if len(requests) <= drops else None
+        return _Response(body, 206 if start else 200, drop)
+
+    monkeypatch.setattr(update, "_open", fake_open)
+    monkeypatch.setattr(update, "RETRY_DELAY_SECONDS", 0)
+    return requests
+
+
+def test_a_dropped_connection_resumes_where_it_stopped(monkeypatch, tmp_path) -> None:
+    release = _release()
+    data = bytes(range(256)) * 4000
+    monkeypatch.setattr(update, "download_folder", lambda: tmp_path / "dl")
+    requests = _flaky_server(monkeypatch, release, data, drops=2)
+
+    path = update.download(release)
+
+    assert path.read_bytes() == data
+    assert len(requests) == 3
+    assert "Range" not in requests[0] and requests[1]["Range"].startswith("bytes=")
+
+
+def test_a_server_without_resume_starts_over(monkeypatch, tmp_path) -> None:
+    release = _release()
+    data = bytes(range(256)) * 4000
+    monkeypatch.setattr(update, "download_folder", lambda: tmp_path / "dl")
+    _flaky_server(monkeypatch, release, data, drops=1, ranges=False)
+
+    assert update.download(release).read_bytes() == data
+
+
+def test_too_many_drops_give_up_cleanly(monkeypatch, tmp_path) -> None:
+    release = _release()
+    monkeypatch.setattr(update, "download_folder", lambda: tmp_path / "dl")
+    _flaky_server(monkeypatch, release, b"x" * 100_000, drops=99)
+
+    with pytest.raises(UpdateError, match="多次中断"):
+        update.download(release)
     assert not any((tmp_path / "dl").iterdir())
 
 
@@ -274,3 +332,53 @@ def test_source_runs_cannot_update_themselves(monkeypatch) -> None:
     assert not dialog.update_button.isEnabled()
     assert "源码" in dialog.status.text()
     dialog.deleteLater()
+
+
+def test_deep_package_folders_unpack_beyond_260_characters(tmp_path) -> None:
+    deep = tmp_path / ("很长的文件夹名" * 6) / ("另一个很长的文件夹" * 5)
+    current = deep / "mengren-desktop-v18.30-windows-x64" / "猛人桌面助手v18.30正式版" / "猛人桌面助手v18.30.exe"
+    current.parent.mkdir(parents=True)
+    member = "猛人桌面助手v18.40正式版/_internal/" + "/".join(["numpy-licenses-folder"] * 8) + "/LICENSE.txt"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr("猛人桌面助手v18.40正式版/猛人桌面助手v18.40.exe", b"exe")
+        bundle.writestr(member, b"license")
+    archive = tmp_path / "new.zip"
+    archive.write_bytes(buffer.getvalue())
+    assert len(str(deep / "mengren-desktop-v18.40-windows-x64" / member)) > 260
+
+    new_exe = update.install(archive, current, "18.40")
+
+    assert new_exe.name == "猛人桌面助手v18.40.exe"
+
+
+def test_a_dropped_version_check_is_retried(monkeypatch) -> None:
+    calls = []
+    body = (
+        b'{"html_url": "u", "assets": [{"name": "mengren-desktop-v18.40-windows-x64.zip",'
+        b' "browser_download_url": "z"}]}'
+    )
+
+    def fake_open(url, _timeout, _headers=None):
+        calls.append(url)
+        if len(calls) == 1:
+            return _Response(body, drop_after=3)
+        return _Response(body)
+
+    monkeypatch.setattr(update, "_open", fake_open)
+    monkeypatch.setattr(update, "RETRY_DELAY_SECONDS", 0)
+
+    assert update.fetch_latest().version == "18.40"
+    assert len(calls) == 2
+
+
+def test_the_running_folder_is_never_replaced(tmp_path) -> None:
+    current = tmp_path / "mengren-desktop-v18.40-windows-x64" / "猛人桌面助手v18.40正式版" / "猛人桌面助手v18.40.exe"
+    current.parent.mkdir(parents=True)
+    current.write_bytes(b"running")
+    archive = tmp_path / "same.zip"
+    archive.write_bytes(_zip_bytes("18.40"))
+
+    with pytest.raises(UpdateError, match="已经安装"):
+        update.install(archive, current, "18.40")
+    assert current.read_bytes() == b"running"

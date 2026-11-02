@@ -18,6 +18,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,8 @@ INSTALL_FOLDER = re.compile(r"^mengren-desktop-v[\d.]+-windows-x64$")
 PRETEND_VERSION_VARIABLE = "MENGREN_UPDATE_FROM_VERSION"
 _USER_AGENT = "MengRenDesktop-Updater"
 _CHUNK = 256 * 1024
+DOWNLOAD_ATTEMPTS = 6
+RETRY_DELAY_SECONDS = 2
 
 # Services abroad go through the Windows proxy first, then directly.
 _ROUTES: tuple[OpenerDirector, ...] = (build_opener(), build_opener(ProxyHandler({})))
@@ -103,9 +106,12 @@ def parse_release(body: dict) -> ReleaseInfo | None:
     )
 
 
-def _open(url: str, timeout: float):
+def _open(url: str, timeout: float, headers: dict[str, str] | None = None):
     """Open ``url`` over the proxy, then directly; raise :class:`UpdateError`."""
-    request = Request(url, headers={"User-Agent": _USER_AGENT, "Accept": "application/vnd.github+json"})
+    request = Request(
+        url,
+        headers={"User-Agent": _USER_AGENT, "Accept": "application/vnd.github+json", **(headers or {})},
+    )
     last: Exception | None = None
     for opener in _ROUTES:
         try:
@@ -117,10 +123,29 @@ def _open(url: str, timeout: float):
     raise UpdateError("无法连接 GitHub，请检查网络或代理。") from last
 
 
+def _read_small(url: str, timeout: float, attempts: int = 3) -> bytes:
+    """Read a small reply, retrying when a proxy cuts the connection."""
+    for attempt in range(1, attempts + 1):
+        try:
+            with _open(url, timeout) as response:
+                return response.read()
+        except (OSError, UpdateError) as error:
+            if isinstance(error, UpdateError) and isinstance(error.__cause__, HTTPError):
+                raise
+            if attempt == attempts:
+                if isinstance(error, UpdateError):
+                    raise
+                raise UpdateError("连接 GitHub 时网络中断，请稍后再试。") from error
+            time.sleep(RETRY_DELAY_SECONDS)
+    raise UpdateError("连接 GitHub 失败。")
+
+
 def fetch_latest(timeout: float = 15) -> ReleaseInfo | None:
     """Return the latest release, or ``None`` if it has no usable zip."""
-    with _open(LATEST_API, timeout) as response:
-        body = json.loads(response.read().decode("utf-8"))
+    try:
+        body = json.loads(_read_small(LATEST_API, timeout).decode("utf-8"))
+    except ValueError as error:
+        raise UpdateError("GitHub 返回了无法识别的数据。") from error
     return parse_release(body)
 
 
@@ -147,28 +172,61 @@ def download(
     cancelled: Callable[[], bool] | None = None,
     timeout: float = 60,
 ) -> Path:
-    """Download and verify the release zip; return its path."""
+    """Download and verify the release zip; return its path.
+
+    Proxies often cut long transfers, so a dropped connection resumes from
+    the bytes already received (an HTTP range request), up to
+    :data:`DOWNLOAD_ATTEMPTS` times; a server that ignores the range makes the
+    download start over.
+    """
     folder = download_folder()
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / release.zip_name
     partial = target.with_suffix(".part")
     digest = hashlib.sha256()
     received = 0
-    with _open(release.zip_url, timeout) as response, partial.open("wb") as output:
-        total = int(response.headers.get("Content-Length") or release.zip_size or 0)
+    total = release.zip_size
+    attempt = 0
+    with partial.open("wb") as output:
         while True:
-            if cancelled is not None and cancelled():
+            attempt += 1
+            headers = {"Range": f"bytes={received}-"} if received else None
+            try:
+                with _open(release.zip_url, timeout, headers) as response:
+                    if received and getattr(response, "status", 206) != 206:
+                        # No resume support: start again from the first byte.
+                        output.seek(0)
+                        output.truncate()
+                        digest = hashlib.sha256()
+                        received = 0
+                    length = int(response.headers.get("Content-Length") or 0)
+                    if length:
+                        total = received + length
+                    while True:
+                        if cancelled is not None and cancelled():
+                            raise UpdateCancelled("已取消下载。")
+                        chunk = response.read(_CHUNK)
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                        digest.update(chunk)
+                        received += len(chunk)
+                        if progress is not None:
+                            progress(received, total)
+                if not total or received >= total:
+                    break
+                raise ConnectionResetError("连接提前结束")
+            except UpdateCancelled:
                 output.close()
                 partial.unlink(missing_ok=True)
-                raise UpdateCancelled("已取消下载。")
-            chunk = response.read(_CHUNK)
-            if not chunk:
-                break
-            output.write(chunk)
-            digest.update(chunk)
-            received += len(chunk)
-            if progress is not None:
-                progress(received, total)
+                raise
+            except (OSError, UpdateError) as error:
+                if attempt >= DOWNLOAD_ATTEMPTS:
+                    output.close()
+                    partial.unlink(missing_ok=True)
+                    raise UpdateError("下载时网络多次中断，请稍后重试，或打开下载页自己下载。") from error
+                _log.warning("下载中断（第 %s 次），从 %s 字节处继续：%r", attempt, received, error)
+                time.sleep(RETRY_DELAY_SECONDS * attempt)
     if total and received != total:
         partial.unlink(missing_ok=True)
         raise UpdateError("下载不完整，请重试。")
@@ -184,8 +242,7 @@ def expected_sha256(release: ReleaseInfo) -> str:
     """Read the zip's checksum from SHA256SUMS.txt; empty when unavailable."""
     if not release.sums_url:
         return ""
-    with _open(release.sums_url, 30) as response:
-        text = response.read().decode("utf-8", "replace")
+    text = _read_small(release.sums_url, 30).decode("utf-8", "replace")
     return sha256_from_sums(text, release.zip_name)
 
 
@@ -207,8 +264,11 @@ def install_root_for(exe: Path) -> Path:
 def install(archive: Path, exe: Path, version: str) -> Path:
     """Unpack the zip next to the current installation; return the new EXE."""
     target = install_root_for(exe) / f"mengren-desktop-v{version}-windows-x64"
+    if target.resolve() in exe.resolve().parents:
+        # Never replace the folder this copy is running from.
+        raise UpdateError(f"v{version} 已经安装在当前文件夹，无需更新。")
     if target.exists():
-        shutil.rmtree(target, ignore_errors=True)
+        shutil.rmtree(_long_path(target), ignore_errors=True)
     target.mkdir(parents=True)
     try:
         with zipfile.ZipFile(archive) as bundle:
@@ -217,16 +277,26 @@ def install(archive: Path, exe: Path, version: str) -> Path:
                 destination = (target / member).resolve()
                 if root not in destination.parents and destination != root:
                     raise UpdateError("更新包里有不安全的路径，已停止安装。")
-            bundle.extractall(target)
+            bundle.extractall(_long_path(target))
     except (zipfile.BadZipFile, OSError) as error:
-        shutil.rmtree(target, ignore_errors=True)
+        shutil.rmtree(_long_path(target), ignore_errors=True)
         raise UpdateError(f"解压新版本失败：{error}") from error
     found = sorted(target.glob(f"*/*v{version}.exe"))
     if not found:
-        shutil.rmtree(target, ignore_errors=True)
+        shutil.rmtree(_long_path(target), ignore_errors=True)
         raise UpdateError("更新包里没有找到程序文件。")
     archive.unlink(missing_ok=True)
     return found[0]
+
+
+def _long_path(path: Path) -> str:
+    """Windows' extended form, so deep folders inside the package can exceed 260 characters."""
+    resolved = str(path.resolve())
+    if os.name != "nt" or resolved.startswith("\\\\?\\"):
+        return resolved
+    if resolved.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + resolved[2:]
+    return "\\\\?\\" + resolved
 
 
 def old_install_folder(old_exe: Path) -> Path | None:

@@ -24,6 +24,7 @@ AFTER_UPDATE = "--after-update"
 PREVIOUS = "--previous"
 _SYNCHRONIZE = 0x00100000
 _DETACHED_PROCESS = 0x00000008
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 _CREATE_NO_WINDOW = 0x08000000
 
 
@@ -36,13 +37,22 @@ class Handoff:
 
 
 def launch_new_version(new_exe: Path, old_exe: Path) -> None:
-    """Start the new copy; the caller quits right after."""
-    subprocess.Popen(
-        [str(new_exe), AFTER_UPDATE, str(os.getpid()), PREVIOUS, str(old_exe)],
-        cwd=str(new_exe.parent),
-        creationflags=_DETACHED_PROCESS,
-        close_fds=True,
-    )
+    """Start the new copy; the caller quits right after.
+
+    The new copy leaves any Windows job the old one runs in, so it is not
+    closed together with the old copy; where that is not allowed it starts
+    normally.
+    """
+    arguments = [str(new_exe), AFTER_UPDATE, str(os.getpid()), PREVIOUS, str(old_exe)]
+    try:
+        subprocess.Popen(
+            arguments,
+            cwd=str(new_exe.parent),
+            creationflags=_DETACHED_PROCESS | _CREATE_BREAKAWAY_FROM_JOB,
+            close_fds=True,
+        )
+    except OSError:
+        subprocess.Popen(arguments, cwd=str(new_exe.parent), creationflags=_DETACHED_PROCESS, close_fds=True)
 
 
 def parse_handoff(arguments: list[str]) -> Handoff | None:

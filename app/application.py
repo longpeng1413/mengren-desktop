@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 
@@ -284,6 +285,8 @@ def run() -> None:
     window.set_hotkey_status(settings, registered)
     reminder_manager.restore()
 
+    # A normal exit is logged; a copy that vanishes without this line was killed.
+    app.aboutToQuit.connect(lambda: logging.getLogger(__name__).info("%s 退出", APP_DISPLAY_NAME))
     app.aboutToQuit.connect(hotkeys.unregister)
     app.aboutToQuit.connect(presentation_hotkeys.unregister)
     app.aboutToQuit.connect(reminder_manager.shutdown)
