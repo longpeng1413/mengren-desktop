@@ -1,5 +1,9 @@
 """Desktop to-do list widget for the F3 desktop tools.
 
+Closed, the list is only a pull cord on the desktop: drag its hook to move it,
+click or pull its knob down to open the list, which then hangs from the hook
+and shows everything; click the hook or "收起" to hide it again.
+
 Unfinished items come first, numbered 1, 2, 3...; finished items follow under
 their own heading, numbered again from 1, struck through and greyed. Click the
 circle to finish an item, double-click its text to edit it, hover it to show
@@ -13,8 +17,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QMouseEvent
+from math import ceil
+
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -33,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import todo_model
+from app.reminder_preferences import TODO_COLUMN_CHOICES, TODO_COLUMNS_AFTER
 from app.reminder_preferences import TODO_BACKGROUND as TODO_BACK
 from app.reminder_preferences import TODO_OPACITY as TODO_ALPHA
 from app.reminder_preferences import TODO_TEXT_COLOR as TODO_TEXT
@@ -322,20 +329,194 @@ class _WidthGrip(QLabel):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._start = event.globalPosition().toPoint()
-            self._start_width = self._owner.width()
+            self._start_width = self._owner.base_width
             event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._start is not None:
             delta = event.globalPosition().toPoint().x() - self._start.x()
-            self._owner.set_list_width(self._start_width + delta)
+            # Two columns share the extra width, so each column grows by half.
+            self._owner.set_list_width(self._start_width + delta // self._owner.column_count)
             event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if self._start is not None:
             self._start = None
-            self._owner.width_changed.emit(self._owner.width())
+            self._owner.width_changed.emit(self._owner.base_width)
             event.accept()
+
+
+class _PullCord(QWidget):
+    """The cord the list hangs from: hook to move, knob to click or pull open."""
+
+    toggle_requested = Signal()
+    open_requested = Signal()
+
+    WIDTH = 56
+    HOOK = 14
+    STRING = 44
+    KNOB = 30
+    PULL_LIMIT = 90
+    PULL_TO_OPEN = 28
+
+    def __init__(self, owner: "TodoListWidget") -> None:
+        super().__init__(owner)
+        self._owner = owner
+        self.collapsed = True
+        self.pull = 0
+        self._press: QPoint | None = None
+        self._start_position = QPoint()
+        self._mode = ""
+        self._moved = False
+        self._count = 0
+        self._ink = QColor(TODO_TEXT)
+        self.setFixedWidth(self.WIDTH)
+        self._resize()
+
+    @property
+    def busy(self) -> bool:
+        return self._press is not None
+
+    def set_state(self, collapsed: bool, open_count: int, ink: QColor) -> None:
+        self.collapsed = collapsed
+        self._count = open_count
+        self._ink = QColor(ink)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(
+            "点一下或按住往下拉，打开待办；按住顶部挂钩拖动可移动位置"
+            if collapsed
+            else "点挂钩收起待办；按住挂钩拖动可移动位置"
+        )
+        self._resize()
+        self.update()
+
+    def _resize(self) -> None:
+        if self.collapsed:
+            self.setFixedHeight(self.HOOK + self.STRING + self.pull + self.KNOB + 4)
+        else:
+            self.setFixedHeight(self.HOOK + 10)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Almost invisible, but it keeps clicks on the cord from falling through.
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
+        center = self.width() / 2
+        bottom = self.height() - (self.KNOB + 4 if self.collapsed else 0)
+        # A soft halo keeps the cord visible on dark and on light wallpapers.
+        halo = QColor(255, 255, 255, 150) if self._ink.lightnessF() < 0.5 else QColor(0, 0, 0, 150)
+        painter.setPen(QPen(halo, 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(int(center), 10, int(center), int(bottom))
+        painter.setBrush(halo)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(QRectF(center - 14.5, 0, 29, 11), 5.5, 5.5)
+        hook = QColor(self._ink)
+        hook.setAlpha(230)
+        painter.setBrush(hook)
+        painter.drawRoundedRect(QRectF(center - 13, 1, 26, 9), 4.5, 4.5)
+        string = QColor(self._ink)
+        string.setAlpha(200)
+        painter.setPen(QPen(string, 2))
+        painter.drawLine(int(center), 10, int(center), int(bottom))
+        if not self.collapsed:
+            return
+        knob = QRectF(center - 16, bottom, 32, self.KNOB)
+        painter.setPen(QPen(QColor(255, 255, 255, 200), 1))
+        painter.setBrush(QColor(DONE_GREEN))
+        painter.drawRoundedRect(knob, 10, 10)
+        font = QFont("Microsoft YaHei UI")
+        font.setPixelSize(13)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor("#ffffff"))
+        label = str(self._count) if self._count else "✓"
+        painter.drawText(knob, Qt.AlignmentFlag.AlignCenter, label)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        self._press = event.globalPosition().toPoint()
+        self._start_position = QPoint(self._owner.pos())
+        self._moved = False
+        on_hook = event.position().y() <= self.HOOK + 4 or not self.collapsed
+        self._mode = "hook" if on_hook else "knob"
+        event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._press is None:
+            super().mouseMoveEvent(event)
+            return
+        delta = event.globalPosition().toPoint() - self._press
+        if delta.manhattanLength() >= DRAG_DISTANCE:
+            self._moved = True
+        if self._mode == "hook" and self._moved:
+            self._owner.move(self._start_position + delta)
+        elif self._mode == "knob":
+            self.pull = max(0, min(self.PULL_LIMIT, delta.y()))
+            self._resize()
+            self._owner.adjustSize()
+            self.update()
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() != Qt.MouseButton.LeftButton or self._press is None:
+            super().mouseReleaseEvent(event)
+            return
+        mode, moved, pulled = self._mode, self._moved, self.pull
+        self._press = None
+        self.pull = 0
+        self._resize()
+        self._owner.adjustSize()
+        if mode == "hook":
+            if moved:
+                self._owner.position_saved.emit(self._owner.pos())
+            else:
+                self.toggle_requested.emit()
+        elif pulled >= self.PULL_TO_OPEN or not moved:
+            self.open_requested.emit()
+        event.accept()
+
+
+class _GroupBlock(QWidget):
+    """One group of rows (unfinished or finished) in one or two columns."""
+
+    SPACING = 12
+
+    def __init__(self, columns: int) -> None:
+        super().__init__()
+        self.columns: list[list["_TodoRow"]] = [[] for _ in range(columns)]
+        self._layouts: list[QVBoxLayout] = []
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(self.SPACING)
+        for _ in range(columns):
+            column = QWidget()
+            column_layout = QVBoxLayout(column)
+            column_layout.setContentsMargins(0, 0, 0, 0)
+            column_layout.setSpacing(1)
+            column_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+            layout.addWidget(column, 1)
+            self._layouts.append(column_layout)
+
+    def add(self, row: "_TodoRow", column: int) -> None:
+        self.columns[column].append(row)
+        self._layouts[column].addWidget(row)
+
+    def measure(self, width: int) -> int:
+        """Height of the taller column at ``width``."""
+        count = len(self.columns)
+        column_width = max(1, (width - self.SPACING * (count - 1)) // count)
+        tallest = 0
+        for rows in self.columns:
+            height = 0
+            for row in rows:
+                row.ensurePolished()
+                line = row.heightForWidth(column_width) if row.hasHeightForWidth() else -1
+                height += line if line >= 0 else row.sizeHint().height()
+            height += max(0, len(rows) - 1)
+            tallest = max(tallest, height)
+        return tallest
 
 
 class TodoListWidget(QWidget):
@@ -344,8 +525,9 @@ class TodoListWidget(QWidget):
     position_saved = Signal(QPoint)
     items_changed = Signal(object)
     title_changed = Signal(str)
-    appearance_changed = Signal(str, str, int, int)
+    appearance_changed = Signal(str, str, int, int, int)
     width_changed = Signal(int)
+    collapsed_changed = Signal(bool)
     delete_requested = Signal()
 
     def __init__(self) -> None:
@@ -356,6 +538,9 @@ class TodoListWidget(QWidget):
         self._drag_offset: QPoint | None = None
         self._row_drag_target = -1
         self._last_removed: tuple[TodoItem, int] | None = None
+        self._collapsed = True
+        self._base_width = 340
+        self._two_columns = False
         self.setObjectName("todoList")
         self.setWindowTitle("待办清单")
         self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
@@ -365,6 +550,10 @@ class TodoListWidget(QWidget):
 
         card = QFrame()
         card.setObjectName("todoCard")
+        self._card = card
+        self.cord = _PullCord(self)
+        self.cord.open_requested.connect(self.expand)
+        self.cord.toggle_requested.connect(self.toggle_collapsed)
         header = QWidget()
         header.setObjectName("todoHeader")
         header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
@@ -385,6 +574,12 @@ class TodoListWidget(QWidget):
         self.style_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.style_button.setToolTip("外观设置：文字颜色、背景颜色、透明度、字号")
         self.style_button.clicked.connect(self.open_appearance)
+        self.hide_button = QPushButton("收起")
+        self.hide_button.setObjectName("todoMenu")
+        self.hide_button.setFixedSize(40, 26)
+        self.hide_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hide_button.setToolTip("收起成拉绳")
+        self.hide_button.clicked.connect(self.collapse)
         self.menu_button = QPushButton("⋯")
         self.menu_button.setObjectName("todoMenu")
         self.menu_button.setFixedSize(30, 26)
@@ -401,6 +596,7 @@ class TodoListWidget(QWidget):
         header_layout.addStretch()
         header_layout.addWidget(self.counts)
         header_layout.addWidget(self.style_button)
+        header_layout.addWidget(self.hide_button)
         header_layout.addWidget(self.menu_button)
         for widget in (header, self.title, self.counts):
             widget.installEventFilter(self)
@@ -456,6 +652,8 @@ class TodoListWidget(QWidget):
         card_layout.addLayout(footer)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(self.cord, 0, Qt.AlignmentFlag.AlignHCenter)
         outer.addWidget(card)
 
     # ------------------------------------------------- manager interface ----
@@ -468,7 +666,12 @@ class TodoListWidget(QWidget):
     def is_dragging(self) -> bool:
         """Moving the card or a row, or typing: keep it out of the desktop layer."""
         typing = self.isActiveWindow() and isinstance(QGuiApplication.focusObject(), QLineEdit)
-        return self._drag_offset is not None or self._row_drag_target >= 0 or typing
+        return (
+            self._drag_offset is not None
+            or self._row_drag_target >= 0
+            or self.cord.busy
+            or typing
+        )
 
     def set_settings(self, settings: ReminderSettings) -> None:
         self._settings = settings
@@ -478,7 +681,8 @@ class TodoListWidget(QWidget):
         self.setStyleSheet(style_for(self._palette))
         self._items = todo_model.display_order(settings.todo_items)
         self.title.setText(settings.todo_title)
-        self.set_list_width(settings.text_width, resize_only=True)
+        self._base_width = max(MIN_WIDTH, min(MAX_WIDTH, int(settings.text_width)))
+        self._collapsed = settings.todo_collapsed
         self._rebuild()
 
     def set_always_on_top(self, enabled: bool) -> None:
@@ -494,7 +698,48 @@ class TodoListWidget(QWidget):
             if enabled:
                 self.raise_()
 
+    @property
+    def collapsed(self) -> bool:
+        return self._collapsed
+
+    def expand(self) -> None:
+        if self._collapsed:
+            self._set_collapsed(False)
+
+    def collapse(self) -> None:
+        if not self._collapsed:
+            self._set_collapsed(True)
+
+    def toggle_collapsed(self) -> None:
+        self._set_collapsed(not self._collapsed)
+
+    def _set_collapsed(self, collapsed: bool) -> None:
+        """Open or close while the hook stays where it is on the desktop."""
+        hook = self.cord.mapToGlobal(QPoint(self.cord.width() // 2, 0))
+        self._collapsed = collapsed
+        self._apply_state()
+        position = QPoint(hook.x() - self.width() // 2, hook.y())
+        screen = QGuiApplication.screenAt(hook) or self.screen()
+        if screen is not None:
+            bounds = screen.availableGeometry()
+            position.setX(max(bounds.left(), min(position.x(), bounds.right() - self.width() + 1)))
+        self.move(position)
+        self.position_saved.emit(self.pos())
+        self.collapsed_changed.emit(collapsed)
+
+    def _apply_state(self) -> None:
+        open_count, _done = todo_model.counts(self._items)
+        self.cord.set_state(self._collapsed, open_count, self._color())
+        self._card.setVisible(not self._collapsed)
+        if self._collapsed:
+            self.setFixedWidth(_PullCord.WIDTH)
+            self.adjustSize()
+        else:
+            self._apply_width()
+            self._fit_height()
+
     def focus_input(self) -> None:
+        self.expand()
         self.show()
         self.raise_()
         self.activateWindow()
@@ -538,16 +783,27 @@ class TodoListWidget(QWidget):
             self._list_layout.addWidget(empty)
         unfinished = todo_model.unfinished(self._items)
         finished = todo_model.finished(self._items)
-        for number, item in enumerate(unfinished, start=1):
-            self._add_row(item, number)
+        self._two_columns = False
+        if unfinished:
+            self._add_group(unfinished)
         if finished:
             section = QLabel(f"已完成 {len(finished)}")
             section.setObjectName("todoSection")
             section.setContentsMargins(8, 0, 0, 0)
             self._list_layout.addWidget(section)
-        for number, item in enumerate(finished, start=1):
-            self._add_row(item, number)
-        self._fit_height()
+            self._add_group(finished)
+        self._apply_state()
+
+    def _add_group(self, items: tuple[TodoItem, ...]) -> None:
+        """Lay one group out in two columns once it has more than the set number."""
+        after = self._settings.todo_columns_after
+        columns = 2 if after and len(items) > after else 1
+        self._two_columns = self._two_columns or columns == 2
+        group = _GroupBlock(columns)
+        per_column = ceil(len(items) / columns)
+        for index, item in enumerate(items):
+            group.add(self._make_row(item, index + 1), index // per_column)
+        self._list_layout.addWidget(group)
 
     def _small_font(self, size: int) -> QFont:
         font = QFont(self.font())
@@ -555,14 +811,14 @@ class TodoListWidget(QWidget):
         font.setPixelSize(max(11, size - 1))
         return font
 
-    def _add_row(self, item: TodoItem, number: int) -> None:
+    def _make_row(self, item: TodoItem, number: int) -> _TodoRow:
         row = _TodoRow(item, number, self)
         row.apply_style(self._color(), self._font_size(), self._palette.muted)
         row.toggled.connect(self.toggle_item)
         row.delete_requested.connect(self.delete_item)
         row.renamed.connect(self.rename_item)
-        self._list_layout.addWidget(row)
         self._rows.append(row)
+        return row
 
     def _content_height(self, width: int) -> int:
         """The list's full height at ``width``, counting every line."""
@@ -575,6 +831,10 @@ class TodoListWidget(QWidget):
             widget = layout.itemAt(index).widget()
             if widget is None or widget.isHidden():
                 continue
+            if isinstance(widget, _GroupBlock):
+                total += widget.measure(inner)
+                count += 1
+                continue
             widget.ensurePolished()
             height = widget.heightForWidth(inner) if widget.hasHeightForWidth() else -1
             if height < 0:
@@ -585,6 +845,9 @@ class TodoListWidget(QWidget):
 
     def _fit_height(self) -> None:
         """Show every line; scroll only beyond most of the screen's height."""
+        if self._collapsed:
+            self.adjustSize()
+            return
         screen = self.screen() or QGuiApplication.primaryScreen()
         limit = int(screen.availableGeometry().height() * 0.75) if screen else 600
         # The list fills the card's width minus its 1-pixel border on each side.
@@ -597,11 +860,29 @@ class TodoListWidget(QWidget):
         super().showEvent(event)
         QTimer.singleShot(0, self._fit_height)
 
+    @property
+    def base_width(self) -> int:
+        """Width of one column, as saved in the settings."""
+        return self._base_width
+
+    @property
+    def column_count(self) -> int:
+        return 2 if self._two_columns else 1
+
     def set_list_width(self, width: int, resize_only: bool = False) -> None:
-        width = max(MIN_WIDTH, min(MAX_WIDTH, int(width)))
-        self.setFixedWidth(width)
+        self._base_width = max(MIN_WIDTH, min(MAX_WIDTH, int(width)))
+        self._apply_width()
         if not resize_only:
             self._fit_height()
+
+    def _apply_width(self) -> None:
+        width = self._base_width
+        if self._two_columns:
+            width = width * 2 + _GroupBlock.SPACING
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            if screen is not None:
+                width = min(width, int(screen.availableGeometry().width() * 0.92))
+        self.setFixedWidth(width)
 
     def _change(self, items: tuple[TodoItem, ...]) -> None:
         self._items = items
@@ -665,22 +946,27 @@ class TodoListWidget(QWidget):
         self._row_drag_target = self._group_rows(row).index(row)
 
     def continue_row_drag(self, row: _TodoRow, global_position: QPoint) -> None:
+        """Insert before or after the nearest line of the same group, in either column."""
         group = self._group_rows(row)
-        y = self._list.mapFromGlobal(global_position).y()
-        target = len(group)
+        point = self._list.mapFromGlobal(global_position)
+        nearest = None
         for index, other in enumerate(group):
-            if y < other.geometry().center().y():
-                target = index
-                break
-        self._row_drag_target = target
-        if target < len(group):
-            line_y = group[target].geometry().top() - 1
-        else:
-            line_y = group[-1].geometry().bottom() + 1
-        self._drop_line.setGeometry(8, max(0, line_y), self._list.width() - 16, 2)
+            rect = QRect(other.mapTo(self._list, QPoint(0, 0)), other.size())
+            dx = max(rect.left() - point.x(), 0, point.x() - rect.right())
+            dy = max(rect.top() - point.y(), 0, point.y() - rect.bottom())
+            distance = dx * dx + dy * dy
+            if nearest is None or distance < nearest[0]:
+                nearest = (distance, index, rect)
+        if nearest is None:
+            return
+        _distance, index, rect = nearest
+        below = point.y() > rect.center().y()
+        self._row_drag_target = index + 1 if below else index
+        line_y = rect.bottom() + 1 if below else rect.top() - 1
+        self._drop_line.setGeometry(rect.left() + 4, max(0, line_y), rect.width() - 8, 2)
         self._drop_line.show()
         self._drop_line.raise_()
-        self._scroll.ensureVisible(0, y, 0, 20)
+        self._scroll.ensureVisible(point.x(), point.y(), 0, 20)
 
     def finish_row_drag(self, row: _TodoRow) -> None:
         group = self._group_rows(row)
@@ -712,6 +998,7 @@ class TodoListWidget(QWidget):
         finish_action.setEnabled(any(not item.done for item in self._items))
         menu.addSeparator()
         look_action = menu.addAction("外观设置…")
+        hide_action = menu.addAction("收起成拉绳")
         menu.addSeparator()
         remove_action = menu.addAction("删除整个清单")
         selected = menu.exec(global_position)
@@ -729,6 +1016,8 @@ class TodoListWidget(QWidget):
             self.finish_all()
         elif selected == look_action:
             self.open_appearance()
+        elif selected == hide_action:
+            self.collapse()
         elif selected == remove_action:
             self.delete_requested.emit()
 
@@ -741,12 +1030,11 @@ class TodoListWidget(QWidget):
         dialog = TodoAppearanceDialog(original, self)
         dialog.preview_changed.connect(self._preview_look)
         if dialog.exec() == TodoAppearanceDialog.DialogCode.Accepted:
-            text, background, opacity, size = dialog.choice()
-            self.appearance_changed.emit(text, background, opacity, size)
+            self.appearance_changed.emit(*dialog.choice())
         else:
             self.set_settings(original)
 
-    def _preview_look(self, text: str, background: str, opacity: int, size: int) -> None:
+    def _preview_look(self, text: str, background: str, opacity: int, size: int, columns_after: int) -> None:
         self.set_settings(
             replace(
                 self._settings,
@@ -754,6 +1042,7 @@ class TodoListWidget(QWidget):
                 todo_background=background,
                 todo_opacity=opacity,
                 font_size=size,
+                todo_columns_after=columns_after,
             )
         )
 
@@ -808,7 +1097,7 @@ class TodoListWidget(QWidget):
 class TodoAppearanceDialog(QDialog):
     """Pick a list's text colour, background colour, opacity and text size."""
 
-    preview_changed = Signal(str, str, int, int)
+    preview_changed = Signal(str, str, int, int, int)
 
     def __init__(self, settings: ReminderSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -827,12 +1116,18 @@ class TodoAppearanceDialog(QDialog):
         self.opacity.setValue(max(5, min(100, settings.todo_opacity)))
         self.opacity_label = QLabel()
         self.opacity.valueChanged.connect(self._changed)
-        self.size = QComboBox()
+        self.size_choice = QComboBox()
         for label, value in FONT_SIZES:
-            self.size.addItem(label, value)
-        index = self.size.findData(settings.font_size)
-        self.size.setCurrentIndex(index if index >= 0 else 1)
-        self.size.currentIndexChanged.connect(self._changed)
+            self.size_choice.addItem(label, value)
+        index = self.size_choice.findData(settings.font_size)
+        self.size_choice.setCurrentIndex(index if index >= 0 else 1)
+        self.size_choice.currentIndexChanged.connect(self._changed)
+        self.columns_choice = QComboBox()
+        for after in TODO_COLUMN_CHOICES:
+            self.columns_choice.addItem("不双列" if after == 0 else f"超过 {after} 条时双列", after)
+        index = self.columns_choice.findData(settings.todo_columns_after)
+        self.columns_choice.setCurrentIndex(index if index >= 0 else self.columns_choice.findData(TODO_COLUMNS_AFTER))
+        self.columns_choice.currentIndexChanged.connect(self._changed)
         reset = QPushButton("恢复默认")
         reset.clicked.connect(self._reset)
         cancel = QPushButton("取消")
@@ -849,7 +1144,8 @@ class TodoAppearanceDialog(QDialog):
         opacity_row.addWidget(self.opacity, 1)
         opacity_row.addWidget(self.opacity_label)
         form.addRow("背景不透明度", opacity_row)
-        form.addRow("字号", self.size)
+        form.addRow("字号", self.size_choice)
+        form.addRow("条目多时", self.columns_choice)
         buttons = QHBoxLayout()
         buttons.addWidget(reset)
         buttons.addStretch()
@@ -866,8 +1162,14 @@ class TodoAppearanceDialog(QDialog):
         layout.addLayout(buttons)
         self._refresh()
 
-    def choice(self) -> tuple[str, str, int, int]:
-        return self._text, self._background, self.opacity.value(), int(self.size.currentData())
+    def choice(self) -> tuple[str, str, int, int, int]:
+        return (
+            self._text,
+            self._background,
+            self.opacity.value(),
+            int(self.size_choice.currentData()),
+            int(self.columns_choice.currentData()),
+        )
 
     def _pick(self, which: str) -> None:
         current = QColor(self._text if which == "text" else self._background)
@@ -885,7 +1187,8 @@ class TodoAppearanceDialog(QDialog):
         self._text = TODO_TEXT
         self._background = TODO_BACK
         self.opacity.setValue(TODO_ALPHA)
-        self.size.setCurrentIndex(self.size.findData(15))
+        self.size_choice.setCurrentIndex(self.size_choice.findData(15))
+        self.columns_choice.setCurrentIndex(self.columns_choice.findData(TODO_COLUMNS_AFTER))
         self._changed()
 
     def _changed(self, *_args) -> None:

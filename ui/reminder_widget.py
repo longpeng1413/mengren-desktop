@@ -88,8 +88,8 @@ class ReminderLauncher(QWidget):
     display_mode_toggle_requested = Signal()
 
     _ACTIONS = (
-        ("贴文字", "text"),
         ("待办", "todo"),
+        ("贴文字", "text"),
         ("贴图片", "image"),
         ("翻译", "translate"),
         ("闹钟", "alarm"),
@@ -1533,16 +1533,19 @@ class DesktopReminderManager:
             lambda width, rid=reminder_id: self._replace(rid, text_width=width)
         )
         widget.appearance_changed.connect(
-            lambda text, background, opacity, size, rid=reminder_id: self._change_todo_look(
-                rid, text, background, opacity, size
+            lambda text, background, opacity, size, columns, rid=reminder_id: self._change_todo_look(
+                rid, text, background, opacity, size, columns
             )
+        )
+        widget.collapsed_changed.connect(
+            lambda collapsed, rid=reminder_id: self._replace(rid, todo_collapsed=collapsed)
         )
         widget.delete_requested.connect(lambda rid=reminder_id: self._delete(rid))
         self._widgets[reminder_id] = widget
         return widget
 
     def _change_todo_look(
-        self, reminder_id: str, text: str, background: str, opacity: int, size: int
+        self, reminder_id: str, text: str, background: str, opacity: int, size: int, columns: int
     ) -> None:
         updated = self._replace(
             reminder_id,
@@ -1550,6 +1553,7 @@ class DesktopReminderManager:
             todo_background=background,
             todo_opacity=opacity,
             font_size=size,
+            todo_columns_after=columns,
         )
         widget = self._widgets.get(reminder_id)
         if updated is not None and widget is not None:

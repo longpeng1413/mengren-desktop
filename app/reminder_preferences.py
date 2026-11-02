@@ -28,6 +28,8 @@ KINDS = {"text", "image", "todo", "alarm", "stopwatch", "countdown"}
 TODO_TEXT_COLOR = "#222222"
 TODO_BACKGROUND = "#ffffff"
 TODO_OPACITY = 78
+TODO_COLUMNS_AFTER = 10
+TODO_COLUMN_CHOICES = (0, 8, 10, 15, 20)
 _OLD_TODO_TEXT_COLOR = "#ebe8e1"
 
 
@@ -65,6 +67,10 @@ class ReminderSettings:
     todo_items: tuple[TodoItem, ...] = ()
     todo_background: str = TODO_BACKGROUND
     todo_opacity: int = TODO_OPACITY
+    # Hidden behind its pull cord until opened; remembered across restarts.
+    todo_collapsed: bool = True
+    # A group with more items than this is shown in two columns (0 = never).
+    todo_columns_after: int = TODO_COLUMNS_AFTER
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +287,8 @@ def _settings_from_values(values: dict) -> ReminderSettings:
         todo_items=todo_from_values(values.get("todo_items", ())),
         todo_background=_valid_color(values.get("todo_background"), TODO_BACKGROUND),
         todo_opacity=max(5, min(100, int(values.get("todo_opacity", TODO_OPACITY)))),
+        todo_collapsed=bool(values.get("todo_collapsed", True)),
+        todo_columns_after=max(0, min(50, int(values.get("todo_columns_after", TODO_COLUMNS_AFTER)))),
     )
     if kind == "todo" and "todo_background" not in values and settings.text_color == _OLD_TODO_TEXT_COLOR:
         # Lists made with the first, dark look move to the light default.
