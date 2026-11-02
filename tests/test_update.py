@@ -382,3 +382,21 @@ def test_the_running_folder_is_never_replaced(tmp_path) -> None:
     with pytest.raises(UpdateError, match="已经安装"):
         update.install(archive, current, "18.40")
     assert current.read_bytes() == b"running"
+
+
+def test_many_checks_in_a_row_never_crash(monkeypatch) -> None:
+    # Releasing the worker before its thread stopped made Qt abort the app
+    # about one check in a hundred; this loop crashed the test run before.
+    _app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(update, "check_for_update", lambda: None)
+    checker = UpdateChecker()
+    finished = []
+    checker.manual_check_finished.connect(lambda _release, _error: finished.append(True))
+
+    for round_number in range(150):
+        assert _wait_for(lambda: checker._thread is None)
+        checker.check_now(manual=True)
+        assert _wait_for(lambda: len(finished) > round_number)
+
+    assert _wait_for(lambda: checker._thread is None)
+    assert len(finished) == 150

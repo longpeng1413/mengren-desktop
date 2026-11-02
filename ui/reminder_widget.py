@@ -1533,14 +1533,24 @@ class DesktopReminderManager:
             lambda width, rid=reminder_id: self._replace(rid, text_width=width)
         )
         widget.appearance_changed.connect(
-            lambda color, size, rid=reminder_id: self._change_todo_look(rid, color, size)
+            lambda text, background, opacity, size, rid=reminder_id: self._change_todo_look(
+                rid, text, background, opacity, size
+            )
         )
         widget.delete_requested.connect(lambda rid=reminder_id: self._delete(rid))
         self._widgets[reminder_id] = widget
         return widget
 
-    def _change_todo_look(self, reminder_id: str, color: str, size: int) -> None:
-        updated = self._replace(reminder_id, text_color=color, font_size=size)
+    def _change_todo_look(
+        self, reminder_id: str, text: str, background: str, opacity: int, size: int
+    ) -> None:
+        updated = self._replace(
+            reminder_id,
+            text_color=text,
+            todo_background=background,
+            todo_opacity=opacity,
+            font_size=size,
+        )
         widget = self._widgets.get(reminder_id)
         if updated is not None and widget is not None:
             widget.set_settings(updated)

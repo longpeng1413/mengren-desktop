@@ -24,6 +24,11 @@ AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
 
 
 KINDS = {"text", "image", "todo", "alarm", "stopwatch", "countdown"}
+# A light, see-through card with dark text is the to-do list's default look.
+TODO_TEXT_COLOR = "#222222"
+TODO_BACKGROUND = "#ffffff"
+TODO_OPACITY = 78
+_OLD_TODO_TEXT_COLOR = "#ebe8e1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +63,8 @@ class ReminderSettings:
     stopwatch_running: bool = False
     todo_title: str = DEFAULT_TODO_TITLE
     todo_items: tuple[TodoItem, ...] = ()
+    todo_background: str = TODO_BACKGROUND
+    todo_opacity: int = TODO_OPACITY
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +223,7 @@ def new_reminder(kind: str) -> ReminderSettings:
         schedule_mode=kind if kind in {"alarm", "countdown"} else "none",
     )
     if kind == "todo":
-        reminder = replace(reminder, text_color="#ebe8e1", font_size=15, text_width=340)
+        reminder = replace(reminder, text_color=TODO_TEXT_COLOR, font_size=15, text_width=340)
     return reminder
 
 
@@ -240,7 +247,7 @@ def _settings_from_values(values: dict) -> ReminderSettings:
         if persisted_countdown_running is None
         else bool(persisted_countdown_running)
     )
-    return ReminderSettings(
+    settings = ReminderSettings(
         reminder_id=str(values.get("reminder_id", "")),
         kind=kind,
         enabled=bool(values.get("enabled", False)),
@@ -272,7 +279,13 @@ def _settings_from_values(values: dict) -> ReminderSettings:
         stopwatch_running=bool(values.get("stopwatch_running", False)),
         todo_title=str(values.get("todo_title") or DEFAULT_TODO_TITLE)[:60],
         todo_items=todo_from_values(values.get("todo_items", ())),
+        todo_background=_valid_color(values.get("todo_background"), TODO_BACKGROUND),
+        todo_opacity=max(5, min(100, int(values.get("todo_opacity", TODO_OPACITY)))),
     )
+    if kind == "todo" and "todo_background" not in values and settings.text_color == _OLD_TODO_TEXT_COLOR:
+        # Lists made with the first, dark look move to the light default.
+        settings = replace(settings, text_color=TODO_TEXT_COLOR)
+    return settings
 def import_reminder_asset(source: str, kind: str) -> str:
     """Copy a chosen image or audio file into stable application storage."""
     source_path = Path(source).expanduser()
@@ -331,6 +344,11 @@ def ensure_default_alarm_sound() -> str:
         sound.setframerate(sample_rate)
         sound.writeframes(b"".join(samples))
     return str(output)
+
+
+def _valid_color(value, default: str) -> str:
+    text = str(value or "")
+    return text if len(text) == 7 and text.startswith("#") else default
 
 
 def _optional_int(value) -> int | None:

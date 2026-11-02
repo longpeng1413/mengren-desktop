@@ -82,14 +82,19 @@ class UpdateChecker(QObject):
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        # Keep the worker referenced: Python would otherwise free it at once.
+        # Keep the worker referenced until its thread has completely stopped:
+        # dropping it earlier lets Python destroy it from this thread while the
+        # worker thread is still running, which makes Qt abort the whole app.
+        thread.finished.connect(self._release)
         self._thread = thread
         self._worker = worker
         thread.start()
 
-    def _finished(self, release: ReleaseInfo | None, error: str) -> None:
+    def _release(self) -> None:
         self._thread = None
         self._worker = None
+
+    def _finished(self, release: ReleaseInfo | None, error: str) -> None:
         if error:
             _log.info("检查更新没有成功：%s", error)
         if release is not None:

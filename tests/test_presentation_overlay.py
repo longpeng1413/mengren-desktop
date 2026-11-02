@@ -476,3 +476,19 @@ def test_width_and_color_popups_restore_toolbar_above_canvas() -> None:
     assert overlay.toolbar_raise_count >= initial_count + 8
     assert overlay._canvas.stroke_width == 8
     overlay.close()
+
+
+def test_click_through_works_after_the_strict_window_signature_is_declared() -> None:
+    # The desktop widgets declare SetWindowPos with all seven arguments for the
+    # whole process; a six-argument call then raised and broke "鼠标/隐藏".
+    from app.desktop_visibility import _user32
+
+    _app = QApplication.instance() or QApplication([])
+    _user32()
+    overlay = PresentationOverlay(QRect(0, 0, 320, 200), PresentationShortcutSettings())
+    overlay.show()
+    QApplication.processEvents()
+
+    overlay._set_windows_click_through(True)
+    overlay._set_windows_click_through(False)
+    overlay.close()

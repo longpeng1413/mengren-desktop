@@ -11,9 +11,14 @@ list and the corner grip to change its width. Every change is saved at once.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
+
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QMouseEvent
 from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -22,11 +27,15 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
 
 from app import todo_model
+from app.reminder_preferences import TODO_BACKGROUND as TODO_BACK
+from app.reminder_preferences import TODO_OPACITY as TODO_ALPHA
+from app.reminder_preferences import TODO_TEXT_COLOR as TODO_TEXT
 from app.reminder_preferences import ReminderSettings
 from app.todo_model import TodoItem
 from ui import theme
@@ -38,65 +47,93 @@ UNDO_SECONDS = 6
 DRAG_DISTANCE = 6
 FONT_SIZES = (("小", 13), ("中", 15), ("大", 17), ("特大", 20))
 
-_STYLE = f"""
+DONE_GREEN = "#4cc38a"
+
+
+@dataclass(frozen=True, slots=True)
+class TodoPalette:
+    """Colours of one list, derived from its text and background choices."""
+
+    text: str
+    muted: str
+    line: str
+    hover: str
+    field: str
+    card: str
+
+
+def palette_for(text: str, background: str, opacity: int) -> TodoPalette:
+    """Pick readable helper colours for a light or a dark background."""
+    back = QColor(background)
+    if not back.isValid():
+        back = QColor("#ffffff")
+    alpha = round(max(5, min(100, opacity)) * 2.55)
+    card = f"rgba({back.red()}, {back.green()}, {back.blue()}, {alpha})"
+    if back.lightnessF() >= 0.55:
+        return TodoPalette(text, "#6b6b6b", "rgba(0, 0, 0, 38)", "rgba(0, 0, 0, 14)", "rgba(255, 255, 255, 190)", card)
+    return TodoPalette(text, theme.MUTED, theme.LINE, "rgba(255, 255, 255, 14)", "rgba(28, 28, 33, 210)", card)
+
+
+def style_for(palette: TodoPalette) -> str:
+    return f"""
 #todoCard {{
-    background-color: rgba(21, 21, 24, 238);
-    border: 1px solid {theme.LINE};
+    background-color: {palette.card};
+    border: 1px solid {palette.line};
     border-radius: 12px;
 }}
 #todoCard QLabel {{ background: transparent; font-family: {theme.FONT}; }}
-#todoHeader {{ border-bottom: 1px solid {theme.LINE}; }}
+#todoHeader {{ border-bottom: 1px solid {palette.line}; }}
 QLabel#todoTitle {{ font-weight: 700; }}
-QLabel#todoCounts, QLabel#todoSection, QLabel#todoNumber, QLabel#todoEmpty {{ color: {theme.MUTED}; }}
+QLabel#todoCounts, QLabel#todoSection, QLabel#todoNumber, QLabel#todoEmpty {{ color: {palette.muted}; }}
 QLabel#todoSection {{ font-size: 12px; font-weight: 600; padding-top: 6px; }}
 #todoRow {{ border-radius: 6px; }}
-#todoRow:hover {{ background-color: rgba(255, 255, 255, 10); }}
+#todoRow:hover {{ background-color: {palette.hover}; }}
 QPushButton#todoCheck {{
     background: transparent;
-    border: 2px solid {theme.MUTED};
-    border-radius: 9px;
+    border: 2px solid {palette.muted};
+    border-radius: 3px;
     color: transparent;
     font-size: 11px;
-    font-weight: 700;
+    font-weight: 800;
+    padding: 0px;
 }}
-QPushButton#todoCheck:hover {{ border-color: {theme.ACCENT}; }}
+QPushButton#todoCheck:hover {{ border-color: {DONE_GREEN}; }}
 QPushButton#todoCheck:checked {{
-    background: {theme.ACCENT};
-    border-color: {theme.ACCENT};
-    color: {theme.ACCENT_INK};
+    background: {DONE_GREEN};
+    border-color: {DONE_GREEN};
+    color: #ffffff;
 }}
 QPushButton#todoDelete, QPushButton#todoMenu {{
     background: transparent;
     border: none;
-    color: {theme.MUTED};
+    color: {palette.muted};
     font-size: 15px;
 }}
-QPushButton#todoMenu {{ color: {theme.TEXT}; font-size: 18px; font-weight: 700; border-radius: 6px; }}
-QPushButton#todoMenu:hover {{ background: {theme.HOVER}; }}
+QPushButton#todoMenu {{ color: {palette.text}; font-family: {theme.FONT}; font-size: 13px; font-weight: 600; border-radius: 6px; }}
+QPushButton#todoMenu:hover {{ background: {palette.hover}; }}
 QPushButton#todoDelete:hover {{ color: {theme.DANGER}; }}
-QPushButton#todoMenu:hover {{ color: {theme.TEXT}; }}
 QPushButton#todoUndo {{
     background: transparent;
-    border: 1px solid {theme.LINE};
+    border: 1px solid {palette.line};
     border-radius: 6px;
-    color: {theme.ACCENT};
+    color: {DONE_GREEN};
     padding: 2px 10px;
     font-family: {theme.FONT};
 }}
 QLineEdit {{
-    color: {theme.TEXT};
-    background: {theme.RAISED};
-    border: 1px solid {theme.LINE};
+    color: {palette.text};
+    background: {palette.field};
+    border: 1px solid {palette.line};
     border-radius: 7px;
     padding: 5px 8px;
     font-family: {theme.FONT};
     selection-background-color: #2f5a46;
 }}
-QLineEdit:focus {{ border-color: {theme.ACCENT}; }}
-QFrame#todoDropLine {{ background: {theme.ACCENT}; border: none; }}
+QLineEdit:focus {{ border-color: {DONE_GREEN}; }}
+QFrame#todoDropLine {{ background: {DONE_GREEN}; border: none; }}
 QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
-QScrollBar::handle:vertical {{ background: {theme.LINE}; border-radius: 3px; min-height: 24px; }}
+QScrollBar::handle:vertical {{ background: {palette.line}; border-radius: 3px; min-height: 24px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 """ + theme.MENU_STYLE
@@ -126,7 +163,7 @@ class _InlineEdit(QLineEdit):
 
 
 class _TodoRow(QWidget):
-    """One numbered line with its circle, text and delete button."""
+    """One numbered line with its check box, text and delete button."""
 
     toggled = Signal(str)
     delete_requested = Signal(str)
@@ -150,7 +187,7 @@ class _TodoRow(QWidget):
         self.check.setObjectName("todoCheck")
         self.check.setCheckable(True)
         self.check.setChecked(item.done)
-        self.check.setFixedSize(18, 18)
+        self.check.setFixedSize(16, 16)
         self.check.setCursor(Qt.CursorShape.PointingHandCursor)
         self.check.setToolTip("标记为未完成" if item.done else "标记为完成")
         self.check.clicked.connect(lambda: self.toggled.emit(self.item.item_id))
@@ -184,13 +221,13 @@ class _TodoRow(QWidget):
         layout.addWidget(self.editor, 1)
         layout.addWidget(self.delete, 0, Qt.AlignmentFlag.AlignTop)
 
-    def apply_style(self, color: QColor, font_size: int) -> None:
+    def apply_style(self, color: QColor, font_size: int, muted: str) -> None:
         font = QFont(self.text.font())
         font.setPixelSize(font_size)
         font.setStrikeOut(self.item.done)
         self.text.setFont(font)
         self.editor.setFont(font)
-        shown = QColor(theme.MUTED) if self.item.done else color
+        shown = QColor(muted) if self.item.done else color
         self.text.setStyleSheet(f"color: {shown.name()};")
         number_font = QFont(font)
         number_font.setStrikeOut(False)
@@ -307,7 +344,7 @@ class TodoListWidget(QWidget):
     position_saved = Signal(QPoint)
     items_changed = Signal(object)
     title_changed = Signal(str)
-    appearance_changed = Signal(str, int)
+    appearance_changed = Signal(str, str, int, int)
     width_changed = Signal(int)
     delete_requested = Signal()
 
@@ -323,7 +360,8 @@ class TodoListWidget(QWidget):
         self.setWindowTitle("待办清单")
         self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setStyleSheet(_STYLE)
+        self._palette = palette_for(TODO_TEXT, TODO_BACK, TODO_ALPHA)
+        self.setStyleSheet(style_for(self._palette))
 
         card = QFrame()
         card.setObjectName("todoCard")
@@ -341,6 +379,12 @@ class TodoListWidget(QWidget):
         self.title_editor.cancelled.connect(self._cancel_title)
         self.counts = QLabel()
         self.counts.setObjectName("todoCounts")
+        self.style_button = QPushButton("外观")
+        self.style_button.setObjectName("todoMenu")
+        self.style_button.setFixedSize(40, 26)
+        self.style_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.style_button.setToolTip("外观设置：文字颜色、背景颜色、透明度、字号")
+        self.style_button.clicked.connect(self.open_appearance)
         self.menu_button = QPushButton("⋯")
         self.menu_button.setObjectName("todoMenu")
         self.menu_button.setFixedSize(30, 26)
@@ -356,6 +400,7 @@ class TodoListWidget(QWidget):
         header_layout.addWidget(self.title_editor, 1)
         header_layout.addStretch()
         header_layout.addWidget(self.counts)
+        header_layout.addWidget(self.style_button)
         header_layout.addWidget(self.menu_button)
         for widget in (header, self.title, self.counts):
             widget.installEventFilter(self)
@@ -427,6 +472,10 @@ class TodoListWidget(QWidget):
 
     def set_settings(self, settings: ReminderSettings) -> None:
         self._settings = settings
+        self._palette = palette_for(
+            self._color().name(), settings.todo_background, settings.todo_opacity
+        )
+        self.setStyleSheet(style_for(self._palette))
         self._items = todo_model.display_order(settings.todo_items)
         self.title.setText(settings.todo_title)
         self.set_list_width(settings.text_width, resize_only=True)
@@ -508,25 +557,45 @@ class TodoListWidget(QWidget):
 
     def _add_row(self, item: TodoItem, number: int) -> None:
         row = _TodoRow(item, number, self)
-        row.apply_style(self._color(), self._font_size())
+        row.apply_style(self._color(), self._font_size(), self._palette.muted)
         row.toggled.connect(self.toggle_item)
         row.delete_requested.connect(self.delete_item)
         row.renamed.connect(self.rename_item)
         self._list_layout.addWidget(row)
         self._rows.append(row)
 
+    def _content_height(self, width: int) -> int:
+        """The list's full height at ``width``, counting every line."""
+        layout = self._list_layout
+        margins = layout.contentsMargins()
+        inner = max(1, width - margins.left() - margins.right())
+        total = margins.top() + margins.bottom()
+        count = 0
+        for index in range(layout.count()):
+            widget = layout.itemAt(index).widget()
+            if widget is None or widget.isHidden():
+                continue
+            widget.ensurePolished()
+            height = widget.heightForWidth(inner) if widget.hasHeightForWidth() else -1
+            if height < 0:
+                height = widget.sizeHint().height()
+            total += height
+            count += 1
+        return total + layout.spacing() * max(0, count - 1)
+
     def _fit_height(self) -> None:
-        """Grow with the list up to most of the screen, then scroll."""
+        """Show every line; scroll only beyond most of the screen's height."""
         screen = self.screen() or QGuiApplication.primaryScreen()
-        limit = int(screen.availableGeometry().height() * 0.6) if screen else 520
+        limit = int(screen.availableGeometry().height() * 0.75) if screen else 600
         # The list fills the card's width minus its 1-pixel border on each side.
-        width = max(1, self.width() - 2)
-        self._list_layout.activate()
-        content = self._list_layout.totalHeightForWidth(width)
-        if content < 0:
-            content = self._list.sizeHint().height()
-        self._scroll.setFixedHeight(max(48, min(content + 4, limit)))
+        content = self._content_height(max(1, self.width() - 2))
+        self._scroll.setFixedHeight(max(40, min(content + 2, limit)))
         self.adjustSize()
+
+    def showEvent(self, event) -> None:
+        """Lines only know their final height once shown, so measure again."""
+        super().showEvent(event)
+        QTimer.singleShot(0, self._fit_height)
 
     def set_list_width(self, width: int, resize_only: bool = False) -> None:
         width = max(MIN_WIDTH, min(MAX_WIDTH, int(width)))
@@ -642,14 +711,7 @@ class TodoListWidget(QWidget):
         finish_action = menu.addAction("全部标为完成")
         finish_action.setEnabled(any(not item.done for item in self._items))
         menu.addSeparator()
-        size_menu = menu.addMenu("字号")
-        size_actions = {}
-        for label, size in FONT_SIZES:
-            action = size_menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(size == self._font_size())
-            size_actions[action] = size
-        color_action = menu.addAction("文字颜色…")
+        look_action = menu.addAction("外观设置…")
         menu.addSeparator()
         remove_action = menu.addAction("删除整个清单")
         selected = menu.exec(global_position)
@@ -665,17 +727,35 @@ class TodoListWidget(QWidget):
             self.clear_finished()
         elif selected == finish_action:
             self.finish_all()
-        elif selected in size_actions:
-            self.appearance_changed.emit(self._settings.text_color, size_actions[selected])
-        elif selected == color_action:
-            color = pick_color(self._color(), self, "选择待办文字颜色")
-            if color.isValid():
-                self.appearance_changed.emit(color.name(), self._font_size())
+        elif selected == look_action:
+            self.open_appearance()
         elif selected == remove_action:
             self.delete_requested.emit()
 
     def contextMenuEvent(self, event) -> None:
         self.open_menu(event.globalPos())
+
+    def open_appearance(self) -> None:
+        """Choose text colour, background colour, opacity and size, previewed live."""
+        original = self._settings
+        dialog = TodoAppearanceDialog(original, self)
+        dialog.preview_changed.connect(self._preview_look)
+        if dialog.exec() == TodoAppearanceDialog.DialogCode.Accepted:
+            text, background, opacity, size = dialog.choice()
+            self.appearance_changed.emit(text, background, opacity, size)
+        else:
+            self.set_settings(original)
+
+    def _preview_look(self, text: str, background: str, opacity: int, size: int) -> None:
+        self.set_settings(
+            replace(
+                self._settings,
+                text_color=text,
+                todo_background=background,
+                todo_opacity=opacity,
+                font_size=size,
+            )
+        )
 
     # ------------------------------------------------------------- title ----
 
@@ -723,3 +803,137 @@ class TodoListWidget(QWidget):
     def sizeHint(self) -> QSize:
         return QSize(self.width(), super().sizeHint().height())
 
+
+
+class TodoAppearanceDialog(QDialog):
+    """Pick a list's text colour, background colour, opacity and text size."""
+
+    preview_changed = Signal(str, str, int, int)
+
+    def __init__(self, settings: ReminderSettings, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("待办清单外观")
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        self.setMinimumWidth(360)
+        self.setStyleSheet(_DIALOG_STYLE)
+        self._text = QColor(settings.text_color).name()
+        self._background = QColor(settings.todo_background).name()
+        self.text_button = QPushButton()
+        self.background_button = QPushButton()
+        self.text_button.clicked.connect(lambda: self._pick("text"))
+        self.background_button.clicked.connect(lambda: self._pick("background"))
+        self.opacity = QSlider(Qt.Orientation.Horizontal)
+        self.opacity.setRange(5, 100)
+        self.opacity.setValue(max(5, min(100, settings.todo_opacity)))
+        self.opacity_label = QLabel()
+        self.opacity.valueChanged.connect(self._changed)
+        self.size = QComboBox()
+        for label, value in FONT_SIZES:
+            self.size.addItem(label, value)
+        index = self.size.findData(settings.font_size)
+        self.size.setCurrentIndex(index if index >= 0 else 1)
+        self.size.currentIndexChanged.connect(self._changed)
+        reset = QPushButton("恢复默认")
+        reset.clicked.connect(self._reset)
+        cancel = QPushButton("取消")
+        cancel.clicked.connect(self.reject)
+        accept = QPushButton("确定")
+        accept.setObjectName("primaryButton")
+        accept.clicked.connect(self.accept)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        form.addRow("文字颜色", self.text_button)
+        form.addRow("背景颜色", self.background_button)
+        opacity_row = QHBoxLayout()
+        opacity_row.addWidget(self.opacity, 1)
+        opacity_row.addWidget(self.opacity_label)
+        form.addRow("背景不透明度", opacity_row)
+        form.addRow("字号", self.size)
+        buttons = QHBoxLayout()
+        buttons.addWidget(reset)
+        buttons.addStretch()
+        buttons.addWidget(cancel)
+        buttons.addWidget(accept)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(14)
+        layout.addLayout(form)
+        hint = QLabel("调整时清单会实时预览；不透明度越低，背景越透明。")
+        hint.setObjectName("muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        layout.addLayout(buttons)
+        self._refresh()
+
+    def choice(self) -> tuple[str, str, int, int]:
+        return self._text, self._background, self.opacity.value(), int(self.size.currentData())
+
+    def _pick(self, which: str) -> None:
+        current = QColor(self._text if which == "text" else self._background)
+        title = "选择待办文字颜色" if which == "text" else "选择待办背景颜色"
+        color = pick_color(current, self, title)
+        if not color.isValid():
+            return
+        if which == "text":
+            self._text = color.name()
+        else:
+            self._background = color.name()
+        self._changed()
+
+    def _reset(self) -> None:
+        self._text = TODO_TEXT
+        self._background = TODO_BACK
+        self.opacity.setValue(TODO_ALPHA)
+        self.size.setCurrentIndex(self.size.findData(15))
+        self._changed()
+
+    def _changed(self, *_args) -> None:
+        self._refresh()
+        self.preview_changed.emit(*self.choice())
+
+    def _refresh(self) -> None:
+        for button, color in ((self.text_button, self._text), (self.background_button, self._background)):
+            ink = "#000000" if QColor(color).lightnessF() > 0.55 else "#ffffff"
+            button.setText(color.upper())
+            button.setStyleSheet(
+                f"background: {color}; color: {ink}; border: 1px solid {theme.LINE};"
+                "border-radius: 7px; min-height: 30px;"
+            )
+        self.opacity_label.setText(f"{self.opacity.value()}%")
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        theme.dark_title_bar(self)
+
+
+_DIALOG_STYLE = f"""
+QDialog {{ background: {theme.BACKGROUND}; }}
+QLabel {{ color: {theme.TEXT}; font-family: {theme.FONT}; font-size: 13px; }}
+QLabel#muted {{ color: {theme.MUTED}; font-size: 12px; }}
+QPushButton {{
+    color: {theme.TEXT};
+    background: {theme.RAISED};
+    border: 1px solid {theme.LINE};
+    border-radius: 8px;
+    padding: 0 14px;
+    min-height: 30px;
+    font-family: {theme.FONT};
+    font-size: 13px;
+}}
+QPushButton:hover {{ background: {theme.HOVER}; border-color: {theme.MUTED}; }}
+QPushButton#primaryButton {{ color: {theme.ACCENT_INK}; background: {theme.ACCENT}; border-color: {theme.ACCENT}; font-weight: 600; }}
+QComboBox {{
+    color: {theme.TEXT};
+    background: {theme.RAISED};
+    border: 1px solid {theme.LINE};
+    border-radius: 7px;
+    padding: 0 10px;
+    min-height: 30px;
+    font-family: {theme.FONT};
+}}
+QComboBox QAbstractItemView {{ color: {theme.TEXT}; background: {theme.RAISED}; selection-background-color: {theme.ACCENT}; selection-color: {theme.ACCENT_INK}; }}
+QSlider::groove:horizontal {{ height: 4px; background: {theme.LINE}; border-radius: 2px; }}
+QSlider::sub-page:horizontal {{ background: {theme.ACCENT}; border-radius: 2px; }}
+QSlider::handle:horizontal {{ background: {theme.TEXT}; width: 14px; margin: -6px 0; border-radius: 7px; }}
+"""

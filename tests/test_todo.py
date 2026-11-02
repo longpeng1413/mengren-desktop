@@ -197,3 +197,69 @@ def test_f3_todo_button_creates_a_saved_list(monkeypatch) -> None:
     assert saved[-1][0].kind == "todo"
     assert _texts(saved[-1][0].todo_items) == [("续费", False)]
     manager.shutdown()
+
+
+# ----------------------------------------------------------- appearance ----
+
+from ui.todo_widget import TodoAppearanceDialog, palette_for  # noqa: E402
+
+
+def test_helper_colours_follow_the_background() -> None:
+    light = palette_for("#222222", "#ffffff", 78)
+    dark = palette_for("#fff4d6", "#101820", 50)
+
+    assert light.muted == "#6b6b6b"
+    assert dark.muted != light.muted
+    assert light.card == "rgba(255, 255, 255, 199)"
+    assert dark.card == "rgba(16, 24, 32, 127)"
+
+
+def test_every_line_shows_when_restored_before_being_shown() -> None:
+    _app = QApplication.instance() or QApplication([])
+    long_texts = [f"第{i}条：复盘守最大二反转或者主拉峰级离场和反手的合理性" for i in range(7)]
+    widget = TodoListWidget()
+    widget.set_settings(replace(new_reminder("todo"), todo_items=_list(*long_texts)))
+
+    widget.show()
+    for _ in range(5):
+        QApplication.processEvents()
+
+    assert widget._scroll.verticalScrollBar().maximum() == 0
+    assert widget._scroll.height() > 7 * 30
+    widget.close()
+
+
+def test_appearance_is_previewed_saved_or_restored() -> None:
+    _app = QApplication.instance() or QApplication([])
+    widget = _widget("a")
+    saved = []
+    widget.appearance_changed.connect(lambda *values: saved.append(values))
+    original = widget._settings
+
+    dialog = TodoAppearanceDialog(original, widget)
+    dialog.preview_changed.connect(widget._preview_look)
+    dialog.opacity.setValue(40)
+    assert widget._settings.todo_opacity == 40
+    assert dialog.choice()[2] == 40
+
+    widget.set_settings(original)
+    assert widget._settings.todo_opacity == original.todo_opacity
+    assert widget._rows[0].check.size().width() == 16
+    widget.close()
+
+
+def test_manager_saves_the_chosen_look(monkeypatch) -> None:
+    _app = QApplication.instance() or QApplication([])
+    saved = []
+    monkeypatch.setattr(reminder_widget, "load_reminders", lambda: [])
+    monkeypatch.setattr(reminder_widget, "save_reminders", lambda items: saved.append(list(items)))
+    manager = reminder_widget.DesktopReminderManager()
+    manager.launcher.buttons["todo"].click()
+    QApplication.processEvents()
+    widget = next(iter(manager._widgets.values()))
+
+    widget.appearance_changed.emit("#112233", "#000000", 50, 17)
+
+    look = saved[-1][0]
+    assert (look.text_color, look.todo_background, look.todo_opacity, look.font_size) == ("#112233", "#000000", 50, 17)
+    manager.shutdown()

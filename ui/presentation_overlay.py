@@ -294,8 +294,11 @@ class PresentationOverlay(QWidget):
         else:
             style &= ~self._WS_EX_TRANSPARENT
         user32.SetWindowLongW(hwnd, self._GWL_EXSTYLE, style)
+        # SetWindowPos takes seven arguments: the desktop widgets declare its
+        # exact signature process-wide, so a missing size argument raises.
         user32.SetWindowPos(
             hwnd,
+            0,
             0,
             0,
             0,
