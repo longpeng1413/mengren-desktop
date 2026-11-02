@@ -15,7 +15,8 @@ from pathlib import Path
 
 from app.config import RESOURCE_DIR
 from app.todo_model import DEFAULT_TITLE as DEFAULT_TODO_TITLE
-from app.todo_model import TodoItem
+from app.todo_model import TodoItem, TrashedItem
+from app.todo_model import trash_from_values
 from app.todo_model import from_values as todo_from_values
 
 
@@ -28,8 +29,12 @@ KINDS = {"text", "image", "todo", "alarm", "stopwatch", "countdown"}
 TODO_TEXT_COLOR = "#222222"
 TODO_BACKGROUND = "#ffffff"
 TODO_OPACITY = 78
-TODO_COLUMNS_AFTER = 10
-TODO_COLUMN_CHOICES = (0, 8, 10, 15, 20)
+TODO_COLUMNS_AFTER = 20
+TODO_COLUMN_CHOICES = (0, 8, 10, 15, 20, 30)
+# Lists saved before this marker used 10 as the default column threshold.
+TODO_LAYOUT_VERSION = 2
+TODO_CORD_STYLES = ("bead", "tag", "pill", "minimal")
+TODO_CORD_STYLE = "tag"
 _OLD_TODO_TEXT_COLOR = "#ebe8e1"
 
 
@@ -71,6 +76,9 @@ class ReminderSettings:
     todo_collapsed: bool = True
     # A group with more items than this is shown in two columns (0 = never).
     todo_columns_after: int = TODO_COLUMNS_AFTER
+    todo_trash: tuple[TrashedItem, ...] = ()
+    todo_cord_style: str = TODO_CORD_STYLE
+    todo_layout_version: int = TODO_LAYOUT_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,7 +296,13 @@ def _settings_from_values(values: dict) -> ReminderSettings:
         todo_background=_valid_color(values.get("todo_background"), TODO_BACKGROUND),
         todo_opacity=max(5, min(100, int(values.get("todo_opacity", TODO_OPACITY)))),
         todo_collapsed=bool(values.get("todo_collapsed", True)),
-        todo_columns_after=max(0, min(50, int(values.get("todo_columns_after", TODO_COLUMNS_AFTER)))),
+        todo_columns_after=_columns_after(values),
+        todo_trash=trash_from_values(values.get("todo_trash", ())),
+        todo_cord_style=(
+            str(values.get("todo_cord_style"))
+            if values.get("todo_cord_style") in TODO_CORD_STYLES
+            else TODO_CORD_STYLE
+        ),
     )
     if kind == "todo" and "todo_background" not in values and settings.text_color == _OLD_TODO_TEXT_COLOR:
         # Lists made with the first, dark look move to the light default.
@@ -352,6 +366,14 @@ def ensure_default_alarm_sound() -> str:
         sound.setframerate(sample_rate)
         sound.writeframes(b"".join(samples))
     return str(output)
+
+
+def _columns_after(values: dict) -> int:
+    """Two-column threshold; lists from before v18.35 move from 10 to 20 once."""
+    after = max(0, min(50, int(values.get("todo_columns_after", TODO_COLUMNS_AFTER))))
+    if after == 10 and int(values.get("todo_layout_version", 1)) < TODO_LAYOUT_VERSION:
+        return TODO_COLUMNS_AFTER
+    return after
 
 
 def _valid_color(value, default: str) -> str:

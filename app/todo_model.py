@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 
 DEFAULT_TITLE = "待办清单"
 MAX_TEXT_LENGTH = 500
@@ -147,3 +148,90 @@ def from_values(values: object) -> tuple[TodoItem, ...]:
 
 def _find(items: tuple[TodoItem, ...], item_id: str) -> TodoItem | None:
     return next((item for item in items if item.item_id == item_id), None)
+
+
+# ---------------------------------------------------------------- trash ----
+# Deleted items wait in the list's own trash so they can be restored. To keep
+# it from growing forever, items older than TRASH_DAYS and anything beyond
+# TRASH_LIMIT (oldest first) are removed for good.
+
+TRASH_DAYS = 30
+TRASH_LIMIT = 200
+
+
+@dataclass(frozen=True, slots=True)
+class TrashedItem:
+    """A deleted item and when it was deleted (ISO time, local)."""
+
+    item: TodoItem
+    deleted_at: str
+
+
+def throw_away(
+    trash: tuple[TrashedItem, ...],
+    removed: tuple[TodoItem, ...],
+    now: datetime | None = None,
+) -> tuple[TrashedItem, ...]:
+    """Put deleted items at the top of the trash (newest first)."""
+    stamp = (now or datetime.now()).replace(microsecond=0).isoformat()
+    fresh = tuple(TrashedItem(item, stamp) for item in removed)
+    removed_ids = {item.item_id for item in removed}
+    older = tuple(entry for entry in trash if entry.item.item_id not in removed_ids)
+    return prune_trash(fresh + older, now)
+
+
+def prune_trash(trash: tuple[TrashedItem, ...], now: datetime | None = None) -> tuple[TrashedItem, ...]:
+    """Drop items older than :data:`TRASH_DAYS` and beyond :data:`TRASH_LIMIT`."""
+    limit = (now or datetime.now()) - timedelta(days=TRASH_DAYS)
+    kept = []
+    for entry in trash:
+        try:
+            deleted = datetime.fromisoformat(entry.deleted_at)
+        except ValueError:
+            deleted = now or datetime.now()
+        if deleted >= limit:
+            kept.append(entry)
+    return tuple(kept[:TRASH_LIMIT])
+
+
+def restore_from_trash(
+    items: tuple[TodoItem, ...],
+    trash: tuple[TrashedItem, ...],
+    item_ids: set[str],
+) -> tuple[tuple[TodoItem, ...], tuple[TrashedItem, ...]]:
+    """Move chosen items back to the end of their group in the list."""
+    back = tuple(entry.item for entry in trash if entry.item.item_id in item_ids)
+    present = {item.item_id for item in items}
+    back = tuple(item for item in back if item.item_id not in present)
+    remaining = tuple(entry for entry in trash if entry.item.item_id not in item_ids)
+    return display_order(items + back), remaining
+
+
+def purge(trash: tuple[TrashedItem, ...], item_ids: set[str]) -> tuple[TrashedItem, ...]:
+    """Delete chosen items from the trash for good."""
+    return tuple(entry for entry in trash if entry.item.item_id not in item_ids)
+
+
+def forget(trash: tuple[TrashedItem, ...], item_id: str) -> tuple[TrashedItem, ...]:
+    """Take one item back out of the trash (used by undo)."""
+    return purge(trash, {item_id})
+
+
+def trash_from_values(values: object, now: datetime | None = None) -> tuple[TrashedItem, ...]:
+    """Read the trash from the settings file, pruning expired items."""
+    if not isinstance(values, (list, tuple)):
+        return ()
+    entries = []
+    for value in values:
+        if isinstance(value, TrashedItem):
+            entries.append(value)
+            continue
+        if not isinstance(value, dict):
+            continue
+        item_value = value.get("item", value)
+        items = from_values([item_value])
+        if not items:
+            continue
+        stamp = str(value.get("deleted_at") or (now or datetime.now()).replace(microsecond=0).isoformat())
+        entries.append(TrashedItem(items[0], stamp))
+    return prune_trash(tuple(entries), now)

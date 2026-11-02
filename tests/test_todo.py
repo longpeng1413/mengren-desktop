@@ -259,11 +259,12 @@ def test_manager_saves_the_chosen_look(monkeypatch) -> None:
     QApplication.processEvents()
     widget = next(iter(manager._widgets.values()))
 
-    widget.appearance_changed.emit("#112233", "#000000", 50, 17, 8)
+    widget.appearance_changed.emit("#112233", "#000000", 50, 17, 8, "tag")
 
     look = saved[-1][0]
     assert (look.text_color, look.todo_background, look.todo_opacity, look.font_size) == ("#112233", "#000000", 50, 17)
     assert look.todo_columns_after == 8
+    assert look.todo_cord_style == "tag"
     manager.shutdown()
 
 
@@ -293,7 +294,7 @@ def test_a_closed_list_is_only_its_cord_and_a_click_opens_it() -> None:
     widget.collapsed_changed.connect(states.append)
     hook = _hook(widget)
 
-    assert widget.width() == _PullCord.WIDTH
+    assert widget.width() == widget.cord.width()
     assert widget._card.isHidden()
     knob = QPoint(widget.cord.width() // 2, widget.cord.height() - 10)
     QTest.mouseClick(widget.cord, Qt.MouseButton.LeftButton, pos=knob)
@@ -347,12 +348,16 @@ def test_clicking_the_hook_or_hide_closes_and_dragging_the_hook_moves() -> None:
 
 
 def test_a_long_group_switches_to_two_columns_and_widens() -> None:
-    widget = _widget(*[f"第{i}条" for i in range(12)])
+    widget = _widget(*[f"第{i}条" for i in range(20)])
+    assert len(widget._list_layout.itemAt(0).widget().columns) == 1
+    widget.close()
+
+    widget = _widget(*[f"第{i}条" for i in range(22)])
     open_group = widget._list_layout.itemAt(0).widget()
 
     assert len(open_group.columns) == 2
-    assert [len(column) for column in open_group.columns] == [6, 6]
-    assert [row.number.text() for row in open_group.columns[1]][:2] == ["7.", "8."]
+    assert [len(column) for column in open_group.columns] == [11, 11]
+    assert [row.number.text() for row in open_group.columns[1]][:2] == ["12.", "13."]
     assert widget.width() > widget.base_width * 2
     widget.close()
 
@@ -372,11 +377,11 @@ def test_two_columns_can_be_switched_off() -> None:
 
 
 def test_dragging_into_the_second_column_reorders() -> None:
-    widget = _widget(*[f"项{i}" for i in range(12)])
+    widget = _widget(*[f"项{i}" for i in range(22)])
     for _ in range(3):
         QApplication.processEvents()
     first = _row(widget, "项0")
-    target = _row(widget, "项8")
+    target = _row(widget, "项15")
     below_target = target.mapToGlobal(QPoint(10, target.height() - 2))
 
     widget.begin_row_drag(first)
@@ -384,7 +389,7 @@ def test_dragging_into_the_second_column_reorders() -> None:
     widget.finish_row_drag(first)
 
     texts = [item.text for item in widget.items]
-    assert texts.index("项0") == texts.index("项8") + 1
+    assert texts.index("项0") == texts.index("项15") + 1
     widget.close()
 
 
@@ -407,3 +412,151 @@ def test_choosing_a_text_colour_really_changes_it(monkeypatch) -> None:
     assert dialog.choice()[:2] == ("#ff0000", "#ff0000")
     assert len(seen) == 2
     dialog.deleteLater()
+
+
+# ---------------------------------------------------------------- trash ----
+
+from datetime import datetime, timedelta  # noqa: E402
+
+from ui.todo_widget import TodoTrashDialog  # noqa: E402
+
+
+def test_trash_keeps_thirty_days_and_two_hundred_items() -> None:
+    now = datetime(2026, 11, 2, 12, 0)
+    items = _list(*[str(i) for i in range(205)])
+    trash = todo.throw_away((), items, now)
+    assert len(trash) == todo.TRASH_LIMIT
+
+    old = todo.throw_away((), _list("旧的"), now - timedelta(days=31))
+    assert todo.prune_trash(old, now) == ()
+    assert len(todo.prune_trash(todo.throw_away((), _list("新的"), now - timedelta(days=29)), now)) == 1
+
+
+def test_restored_items_return_to_their_own_group() -> None:
+    items = _list("a", "b")
+    items = todo.toggle(items, items[0].item_id)
+    trash = todo.throw_away((), items)
+
+    restored, remaining = todo.restore_from_trash((), trash, {items[1].item_id})
+
+    assert _texts(restored) == [("a", True)]
+    assert len(remaining) == 1
+
+
+def test_trash_is_saved_and_read_back() -> None:
+    reminder = replace(new_reminder("todo"), todo_trash=todo.throw_away((), _list("删掉的")))
+
+    loaded = _settings_from_values(json.loads(json.dumps(asdict(reminder))))
+
+    assert [entry.item.text for entry in loaded.todo_trash] == ["删掉的"]
+
+
+def test_deleting_clearing_and_undo_go_through_the_trash() -> None:
+    widget = _widget("a", "b", "c")
+    saved = []
+    widget.trash_changed.connect(saved.append)
+
+    _row(widget, "a").delete.click()
+    assert [e.item.text for e in widget.trash] == ["a"]
+    assert widget.trash_button.text() == "回收站 1"
+
+    widget.undo_button.click()
+    assert widget.trash == ()
+
+    _row(widget, "b").check.click()
+    widget.clear_finished()
+    assert [e.item.text for e in widget.trash] == ["b"]
+    assert [item.text for item in widget.items] == ["a", "c"]
+    assert saved[-1] == widget.trash
+    widget.close()
+
+
+def test_trash_window_restores_and_deletes_for_good(monkeypatch) -> None:
+    widget = _widget("a", "b")
+    _row(widget, "a").delete.click()
+    _row(widget, "b").delete.click()
+    dialog = TodoTrashDialog(widget.trash, widget)
+    dialog.restore_requested.connect(widget.restore_from_trash)
+    dialog.purge_requested.connect(widget.purge_from_trash)
+    widget.trash_changed.connect(dialog.set_trash)
+    monkeypatch.setattr(dialog, "_confirm", lambda _question: True)
+
+    assert not dialog.restore_button.isEnabled()
+    dialog.list.item(0).setCheckState(Qt.CheckState.Checked)
+    dialog.restore_button.click()
+    assert [item.text for item in widget.items] == ["b"]
+    assert dialog.list.count() == 1
+
+    dialog.empty_button.click()
+    assert widget.trash == ()
+    assert dialog.empty.isVisibleTo(dialog)
+    dialog.deleteLater()
+    widget.close()
+
+
+# ------------------------------------------------------------- fixed bugs ----
+
+
+def test_opening_and_closing_keeps_the_hook_in_place() -> None:
+    widget = _cord_widget("a", "b", "c")
+    start = (widget.x() + widget.width() // 2, widget.y())
+
+    for _ in range(5):
+        widget.expand()
+        QApplication.processEvents()
+        widget.collapse()
+        QApplication.processEvents()
+
+    assert (widget.x() + widget.width() // 2, widget.y()) == start
+    widget.close()
+
+
+def test_ticking_a_box_never_shrinks_the_list() -> None:
+    widget = _widget("手机端用蒸馏结果开发AI对话软件", "两个主力AI都是每个月7号续费", "交易流程的制定", "复盘", "测试")
+    for _ in range(3):
+        QApplication.processEvents()
+    before = widget._scroll.height()
+
+    widget._rows[0].check.click()
+
+    assert widget._scroll.height() >= before
+    assert widget._scroll.verticalScrollBar().maximum() == 0
+    widget.close()
+
+
+def test_every_cord_style_draws_and_sets_its_width() -> None:
+    from ui import pull_cord_art
+
+    for key in ("bead", "tag", "pill", "minimal"):
+        widget = _cord_widget("a")
+        widget.set_settings(replace(widget._settings, todo_cord_style=key))
+        QApplication.processEvents()
+        assert widget.cord.width() == pull_cord_art.style(key).width
+        assert not widget.cord.grab().isNull()
+        widget.close()
+
+
+def test_trash_button_sits_in_the_title_bar_and_the_cord_is_short() -> None:
+    from ui import pull_cord_art
+
+    widget = _cord_widget("a")
+    assert widget._settings.todo_cord_style == "tag"
+    assert widget.cord.height() == pull_cord_art.MOUNT_HEIGHT + 10 + pull_cord_art.style("tag").knob_height
+    widget.expand()
+    QApplication.processEvents()
+
+    assert widget._header.isAncestorOf(widget.trash_button)
+    widget.close()
+
+
+
+def test_old_lists_move_to_twenty_once_and_rows_sit_closer() -> None:
+    assert _settings_from_values({"kind": "todo", "todo_columns_after": 10}).todo_columns_after == 20
+    chosen = {"kind": "todo", "todo_columns_after": 10, "todo_layout_version": 2}
+    assert _settings_from_values(chosen).todo_columns_after == 10
+    assert _settings_from_values({"kind": "todo", "todo_columns_after": 15}).todo_columns_after == 15
+
+    widget = _widget("a")
+    margins = widget._rows[0].layout().contentsMargins()
+    assert (margins.top(), margins.bottom()) == (2, 2)
+    widget.close()

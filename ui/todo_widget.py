@@ -23,6 +23,9 @@ from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, Sig
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QComboBox,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
     QDialog,
     QFormLayout,
     QFrame,
@@ -39,13 +42,14 @@ from PySide6.QtWidgets import (
 )
 
 from app import todo_model
-from app.reminder_preferences import TODO_COLUMN_CHOICES, TODO_COLUMNS_AFTER
+from app.reminder_preferences import TODO_COLUMN_CHOICES, TODO_COLUMNS_AFTER, TODO_CORD_STYLES
+from app.reminder_preferences import TODO_CORD_STYLE as TODO_CORD
 from app.reminder_preferences import TODO_BACKGROUND as TODO_BACK
 from app.reminder_preferences import TODO_OPACITY as TODO_ALPHA
 from app.reminder_preferences import TODO_TEXT_COLOR as TODO_TEXT
 from app.reminder_preferences import ReminderSettings
-from app.todo_model import TodoItem
-from ui import theme
+from app.todo_model import TodoItem, TrashedItem
+from ui import pull_cord_art, theme
 from ui.color_picker import pick_color
 
 MIN_WIDTH = 240
@@ -92,6 +96,7 @@ def style_for(palette: TodoPalette) -> str:
 #todoHeader {{ border-bottom: 1px solid {palette.line}; }}
 QLabel#todoTitle {{ font-weight: 700; }}
 QLabel#todoCounts, QLabel#todoSection, QLabel#todoNumber, QLabel#todoEmpty {{ color: {palette.muted}; }}
+QLabel#todoCounts {{ font-size: 11px; }}
 QLabel#todoSection {{ font-size: 12px; font-weight: 600; padding-top: 6px; }}
 #todoRow {{ border-radius: 6px; }}
 #todoRow:hover {{ background-color: {palette.hover}; }}
@@ -220,7 +225,8 @@ class _TodoRow(QWidget):
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 4, 2, 4)
+        # Two pixels above and below each line: half the earlier gap between items.
+        layout.setContentsMargins(4, 2, 2, 2)
         layout.setSpacing(8)
         layout.addWidget(self.number, 0, Qt.AlignmentFlag.AlignTop)
         layout.addWidget(self.check, 0, Qt.AlignmentFlag.AlignTop)
@@ -352,10 +358,8 @@ class _PullCord(QWidget):
     toggle_requested = Signal()
     open_requested = Signal()
 
-    WIDTH = 56
-    HOOK = 14
-    STRING = 44
-    KNOB = 30
+    HOOK = pull_cord_art.MOUNT_HEIGHT
+    STRING = 10
     PULL_LIMIT = 90
     PULL_TO_OPEN = 28
 
@@ -369,18 +373,19 @@ class _PullCord(QWidget):
         self._mode = ""
         self._moved = False
         self._count = 0
-        self._ink = QColor(TODO_TEXT)
-        self.setFixedWidth(self.WIDTH)
+        self.style = pull_cord_art.style(TODO_CORD)
+        self.setFixedWidth(self.style.width)
         self._resize()
 
     @property
     def busy(self) -> bool:
         return self._press is not None
 
-    def set_state(self, collapsed: bool, open_count: int, ink: QColor) -> None:
+    def set_state(self, collapsed: bool, open_count: int, style_key: str) -> None:
         self.collapsed = collapsed
         self._count = open_count
-        self._ink = QColor(ink)
+        self.style = pull_cord_art.style(style_key)
+        self.setFixedWidth(self.style.width)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(
             "点一下或按住往下拉，打开待办；按住顶部挂钩拖动可移动位置"
@@ -392,7 +397,7 @@ class _PullCord(QWidget):
 
     def _resize(self) -> None:
         if self.collapsed:
-            self.setFixedHeight(self.HOOK + self.STRING + self.pull + self.KNOB + 4)
+            self.setFixedHeight(self.HOOK + self.STRING + self.pull + self.style.knob_height)
         else:
             self.setFixedHeight(self.HOOK + 10)
 
@@ -402,35 +407,15 @@ class _PullCord(QWidget):
         # Almost invisible, but it keeps clicks on the cord from falling through.
         painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
         center = self.width() / 2
-        bottom = self.height() - (self.KNOB + 4 if self.collapsed else 0)
-        # A soft halo keeps the cord visible on dark and on light wallpapers.
-        halo = QColor(255, 255, 255, 150) if self._ink.lightnessF() < 0.5 else QColor(0, 0, 0, 150)
-        painter.setPen(QPen(halo, 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(int(center), 10, int(center), int(bottom))
-        painter.setBrush(halo)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(QRectF(center - 14.5, 0, 29, 11), 5.5, 5.5)
-        hook = QColor(self._ink)
-        hook.setAlpha(230)
-        painter.setBrush(hook)
-        painter.drawRoundedRect(QRectF(center - 13, 1, 26, 9), 4.5, 4.5)
-        string = QColor(self._ink)
-        string.setAlpha(200)
-        painter.setPen(QPen(string, 2))
-        painter.drawLine(int(center), 10, int(center), int(bottom))
-        if not self.collapsed:
-            return
-        knob = QRectF(center - 16, bottom, 32, self.KNOB)
-        painter.setPen(QPen(QColor(255, 255, 255, 200), 1))
-        painter.setBrush(QColor(DONE_GREEN))
-        painter.drawRoundedRect(knob, 10, 10)
-        font = QFont("Microsoft YaHei UI")
-        font.setPixelSize(13)
-        font.setBold(True)
-        painter.setFont(font)
-        painter.setPen(QColor("#ffffff"))
-        label = str(self._count) if self._count else "✓"
-        painter.drawText(knob, Qt.AlignmentFlag.AlignCenter, label)
+        knob_top = self.height() - (self.style.knob_height if self.collapsed else 0)
+        if self.collapsed:
+            area = QRectF(0, knob_top, self.width(), self.style.knob_height)
+            self.style.draw_knob(painter, area, self._count)
+            end = knob_top + self.style.attach
+        else:
+            end = knob_top + 2
+        pull_cord_art.draw_string(painter, center, 12, end, self.style.string_width)
+        pull_cord_art.draw_mount(painter, center)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
@@ -525,9 +510,10 @@ class TodoListWidget(QWidget):
     position_saved = Signal(QPoint)
     items_changed = Signal(object)
     title_changed = Signal(str)
-    appearance_changed = Signal(str, str, int, int, int)
+    appearance_changed = Signal(str, str, int, int, int, str)
     width_changed = Signal(int)
     collapsed_changed = Signal(bool)
+    trash_changed = Signal(object)
     delete_requested = Signal()
 
     def __init__(self) -> None:
@@ -539,6 +525,7 @@ class TodoListWidget(QWidget):
         self._row_drag_target = -1
         self._last_removed: tuple[TodoItem, int] | None = None
         self._collapsed = True
+        self._trash: tuple[TrashedItem, ...] = ()
         self._base_width = 340
         self._two_columns = False
         self.setObjectName("todoList")
@@ -588,16 +575,28 @@ class TodoListWidget(QWidget):
         self.menu_button.clicked.connect(
             lambda: self.open_menu(self.menu_button.mapToGlobal(QPoint(0, self.menu_button.height())))
         )
+        self.trash_button = QPushButton("回收站")
+        self.trash_button.setObjectName("todoMenu")
+        self.trash_button.setFixedHeight(26)
+        self.trash_button.setMinimumWidth(52)
+        self.trash_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.trash_button.setToolTip("最近删除的待办：可以还原，也可以彻底删除")
+        self.trash_button.clicked.connect(self.open_trash)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(0)
+        title_row.addWidget(self.title)
+        title_row.addWidget(self.title_editor, 1)
+        names = QVBoxLayout()
+        names.setSpacing(1)
+        names.addLayout(title_row)
+        names.addWidget(self.counts)
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(14, 10, 8, 8)
-        header_layout.setSpacing(8)
-        header_layout.addWidget(self.title)
-        header_layout.addWidget(self.title_editor, 1)
+        header_layout.setContentsMargins(14, 8, 8, 7)
+        header_layout.setSpacing(4)
+        header_layout.addLayout(names)
         header_layout.addStretch()
-        header_layout.addWidget(self.counts)
-        header_layout.addWidget(self.style_button)
-        header_layout.addWidget(self.hide_button)
-        header_layout.addWidget(self.menu_button)
+        for button in (self.style_button, self.trash_button, self.hide_button, self.menu_button):
+            header_layout.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
         for widget in (header, self.title, self.counts):
             widget.installEventFilter(self)
 
@@ -653,8 +652,9 @@ class TodoListWidget(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        outer.addWidget(self.cord, 0, Qt.AlignmentFlag.AlignHCenter)
+        outer.addWidget(self.cord, 0, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         outer.addWidget(card)
+        outer.addStretch()
 
     # ------------------------------------------------- manager interface ----
 
@@ -680,6 +680,7 @@ class TodoListWidget(QWidget):
         )
         self.setStyleSheet(style_for(self._palette))
         self._items = todo_model.display_order(settings.todo_items)
+        self._trash = tuple(settings.todo_trash)
         self.title.setText(settings.todo_title)
         self._base_width = max(MIN_WIDTH, min(MAX_WIDTH, int(settings.text_width)))
         self._collapsed = settings.todo_collapsed
@@ -715,7 +716,10 @@ class TodoListWidget(QWidget):
 
     def _set_collapsed(self, collapsed: bool) -> None:
         """Open or close while the hook stays where it is on the desktop."""
-        hook = self.cord.mapToGlobal(QPoint(self.cord.width() // 2, 0))
+        # The cord is always centred at the top of the window, so the hook is
+        # the window's top centre. Reading the cord's position instead picked up
+        # a moment when the cord sat lower, and each close moved the list down.
+        hook = QPoint(self.x() + self.width() // 2, self.y())
         self._collapsed = collapsed
         self._apply_state()
         position = QPoint(hook.x() - self.width() // 2, hook.y())
@@ -729,10 +733,12 @@ class TodoListWidget(QWidget):
 
     def _apply_state(self) -> None:
         open_count, _done = todo_model.counts(self._items)
-        self.cord.set_state(self._collapsed, open_count, self._color())
+        self.cord.set_state(self._collapsed, open_count, self._settings.todo_cord_style)
         self._card.setVisible(not self._collapsed)
         if self._collapsed:
-            self.setFixedWidth(_PullCord.WIDTH)
+            self.setFixedWidth(self.cord.width())
+            self.layout().activate()
+            self.resize(self.cord.width(), self.cord.height())
             self.adjustSize()
         else:
             self._apply_width()
@@ -772,6 +778,7 @@ class TodoListWidget(QWidget):
         self.title_editor.setFont(title_font)
         open_count, done_count = todo_model.counts(self._items)
         self.counts.setText(f"未完成 {open_count} · 已完成 {done_count}")
+        self.trash_button.setText(f"回收站 {len(self._trash)}" if self._trash else "回收站")
         self.input.setFont(self._small_font(size))
 
         if not self._items:
@@ -829,7 +836,12 @@ class TodoListWidget(QWidget):
         count = 0
         for index in range(layout.count()):
             widget = layout.itemAt(index).widget()
-            if widget is None or widget.isHidden():
+            # Skip only what was hidden on purpose (such as the undo bar). Lines
+            # just rebuilt count as hidden until Qt shows them; skipping those
+            # shrank the list to one line after ticking a box.
+            if widget is None or (
+                widget.isHidden() and widget.testAttribute(Qt.WidgetAttribute.WA_WState_ExplicitShowHide)
+            ):
                 continue
             if isinstance(widget, _GroupBlock):
                 total += widget.measure(inner)
@@ -907,10 +919,20 @@ class TodoListWidget(QWidget):
     def rename_item(self, item_id: str, text: str) -> None:
         self._change(todo_model.rename(self._items, item_id, text))
 
+    @property
+    def trash(self) -> tuple[TrashedItem, ...]:
+        return self._trash
+
+    def _set_trash(self, trash: tuple[TrashedItem, ...]) -> None:
+        self._trash = trash
+        self.trash_button.setText(f"回收站 {len(trash)}" if trash else "回收站")
+        self.trash_changed.emit(trash)
+
     def delete_item(self, item_id: str) -> None:
         items, removed, index = todo_model.remove(self._items, item_id)
         if removed is None:
             return
+        self._set_trash(todo_model.throw_away(self._trash, (removed,)))
         self._last_removed = (removed, index)
         text = removed.text if len(removed.text) <= 18 else removed.text[:18] + "…"
         self.undo_label.setText(f"已删除：{text}")
@@ -923,6 +945,7 @@ class TodoListWidget(QWidget):
             return
         item, index = self._last_removed
         self._hide_undo()
+        self._set_trash(todo_model.forget(self._trash, item.item_id))
         self._change(todo_model.restore(self._items, item, index))
 
     def _hide_undo(self) -> None:
@@ -932,7 +955,28 @@ class TodoListWidget(QWidget):
         self._fit_height()
 
     def clear_finished(self) -> None:
+        done = todo_model.finished(self._items)
+        if done:
+            self._set_trash(todo_model.throw_away(self._trash, done))
         self._change(todo_model.clear_finished(self._items))
+
+    def restore_from_trash(self, item_ids: set[str]) -> None:
+        items, trash = todo_model.restore_from_trash(self._items, self._trash, item_ids)
+        self._set_trash(trash)
+        self._change(items)
+
+    def purge_from_trash(self, item_ids: set[str]) -> None:
+        self._set_trash(todo_model.purge(self._trash, item_ids))
+
+    def open_trash(self) -> None:
+        dialog = TodoTrashDialog(self._trash, self)
+        dialog.restore_requested.connect(self.restore_from_trash)
+        dialog.purge_requested.connect(self.purge_from_trash)
+        self.trash_changed.connect(dialog.set_trash)
+        try:
+            dialog.exec()
+        finally:
+            self.trash_changed.disconnect(dialog.set_trash)
 
     def finish_all(self) -> None:
         self._change(todo_model.finish_all(self._items))
@@ -999,6 +1043,7 @@ class TodoListWidget(QWidget):
         menu.addSeparator()
         look_action = menu.addAction("外观设置…")
         hide_action = menu.addAction("收起成拉绳")
+        trash_action = menu.addAction(f"回收站（{len(self._trash)}）")
         menu.addSeparator()
         remove_action = menu.addAction("删除整个清单")
         selected = menu.exec(global_position)
@@ -1018,6 +1063,8 @@ class TodoListWidget(QWidget):
             self.open_appearance()
         elif selected == hide_action:
             self.collapse()
+        elif selected == trash_action:
+            self.open_trash()
         elif selected == remove_action:
             self.delete_requested.emit()
 
@@ -1034,7 +1081,9 @@ class TodoListWidget(QWidget):
         else:
             self.set_settings(original)
 
-    def _preview_look(self, text: str, background: str, opacity: int, size: int, columns_after: int) -> None:
+    def _preview_look(
+        self, text: str, background: str, opacity: int, size: int, columns_after: int, cord: str
+    ) -> None:
         self.set_settings(
             replace(
                 self._settings,
@@ -1043,6 +1092,7 @@ class TodoListWidget(QWidget):
                 todo_opacity=opacity,
                 font_size=size,
                 todo_columns_after=columns_after,
+                todo_cord_style=cord,
             )
         )
 
@@ -1097,7 +1147,7 @@ class TodoListWidget(QWidget):
 class TodoAppearanceDialog(QDialog):
     """Pick a list's text colour, background colour, opacity and text size."""
 
-    preview_changed = Signal(str, str, int, int, int)
+    preview_changed = Signal(str, str, int, int, int, str)
 
     def __init__(self, settings: ReminderSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1128,6 +1178,12 @@ class TodoAppearanceDialog(QDialog):
         index = self.columns_choice.findData(settings.todo_columns_after)
         self.columns_choice.setCurrentIndex(index if index >= 0 else self.columns_choice.findData(TODO_COLUMNS_AFTER))
         self.columns_choice.currentIndexChanged.connect(self._changed)
+        self.cord_choice = QComboBox()
+        for key in TODO_CORD_STYLES:
+            self.cord_choice.addItem(pull_cord_art.style(key).label, key)
+        index = self.cord_choice.findData(settings.todo_cord_style)
+        self.cord_choice.setCurrentIndex(index if index >= 0 else 0)
+        self.cord_choice.currentIndexChanged.connect(self._changed)
         reset = QPushButton("恢复默认")
         reset.clicked.connect(self._reset)
         cancel = QPushButton("取消")
@@ -1146,6 +1202,7 @@ class TodoAppearanceDialog(QDialog):
         form.addRow("背景不透明度", opacity_row)
         form.addRow("字号", self.size_choice)
         form.addRow("条目多时", self.columns_choice)
+        form.addRow("拉绳样式", self.cord_choice)
         buttons = QHBoxLayout()
         buttons.addWidget(reset)
         buttons.addStretch()
@@ -1162,13 +1219,14 @@ class TodoAppearanceDialog(QDialog):
         layout.addLayout(buttons)
         self._refresh()
 
-    def choice(self) -> tuple[str, str, int, int, int]:
+    def choice(self) -> tuple[str, str, int, int, int, str]:
         return (
             self._text,
             self._background,
             self.opacity.value(),
             int(self.size_choice.currentData()),
             int(self.columns_choice.currentData()),
+            str(self.cord_choice.currentData()),
         )
 
     def _pick(self, which: str) -> None:
@@ -1189,6 +1247,7 @@ class TodoAppearanceDialog(QDialog):
         self.opacity.setValue(TODO_ALPHA)
         self.size_choice.setCurrentIndex(self.size_choice.findData(15))
         self.columns_choice.setCurrentIndex(self.columns_choice.findData(TODO_COLUMNS_AFTER))
+        self.cord_choice.setCurrentIndex(self.cord_choice.findData(TODO_CORD))
         self._changed()
 
     def _changed(self, *_args) -> None:
@@ -1239,4 +1298,137 @@ QComboBox QAbstractItemView {{ color: {theme.TEXT}; background: {theme.RAISED}; 
 QSlider::groove:horizontal {{ height: 4px; background: {theme.LINE}; border-radius: 2px; }}
 QSlider::sub-page:horizontal {{ background: {theme.ACCENT}; border-radius: 2px; }}
 QSlider::handle:horizontal {{ background: {theme.TEXT}; width: 14px; margin: -6px 0; border-radius: 7px; }}
+"""
+
+
+class TodoTrashDialog(QDialog):
+    """Recently deleted items: restore them, or delete them for good."""
+
+    restore_requested = Signal(object)
+    purge_requested = Signal(object)
+
+    def __init__(self, trash: tuple[TrashedItem, ...], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("待办回收站")
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        self.resize(440, 460)
+        self.setStyleSheet(_DIALOG_STYLE + _TRASH_STYLE)
+        self.list = QListWidget()
+        self.list.itemChanged.connect(self._update_buttons)
+        self.empty = QLabel("回收站是空的。")
+        self.empty.setObjectName("muted")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        note = QLabel(
+            f"删除的待办在这里保留 {todo_model.TRASH_DAYS} 天、最多 {todo_model.TRASH_LIMIT} 条，"
+            "超出的会自动彻底删除。"
+        )
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        self.select_all = QPushButton("全选")
+        self.restore_button = QPushButton("还原")
+        self.restore_button.setObjectName("primaryButton")
+        self.purge_button = QPushButton("彻底删除")
+        self.empty_button = QPushButton("清空回收站")
+        close = QPushButton("关闭")
+        self.select_all.clicked.connect(self._toggle_all)
+        self.restore_button.clicked.connect(self._restore)
+        self.purge_button.clicked.connect(self._purge)
+        self.empty_button.clicked.connect(self._empty)
+        close.clicked.connect(self.accept)
+        actions = QHBoxLayout()
+        actions.addWidget(self.select_all)
+        actions.addStretch()
+        actions.addWidget(self.purge_button)
+        actions.addWidget(self.restore_button)
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.empty_button)
+        bottom.addStretch()
+        bottom.addWidget(close)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(10)
+        layout.addWidget(self.list, 1)
+        layout.addWidget(self.empty, 1)
+        layout.addLayout(actions)
+        layout.addWidget(note)
+        layout.addLayout(bottom)
+        self.set_trash(trash)
+
+    def set_trash(self, trash: tuple[TrashedItem, ...]) -> None:
+        self.list.blockSignals(True)
+        self.list.clear()
+        for entry in trash:
+            mark = "✓ " if entry.item.done else ""
+            when = entry.deleted_at.replace("T", " ")[5:16]
+            row = QListWidgetItem(f"{mark}{entry.item.text}\n删除于 {when}")
+            row.setData(Qt.ItemDataRole.UserRole, entry.item.item_id)
+            row.setFlags(row.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            row.setCheckState(Qt.CheckState.Unchecked)
+            self.list.addItem(row)
+        self.list.blockSignals(False)
+        self.list.setVisible(bool(trash))
+        self.empty.setVisible(not trash)
+        self.empty_button.setEnabled(bool(trash))
+        self.select_all.setEnabled(bool(trash))
+        self._update_buttons()
+
+    def checked_ids(self) -> set[str]:
+        return {
+            self.list.item(index).data(Qt.ItemDataRole.UserRole)
+            for index in range(self.list.count())
+            if self.list.item(index).checkState() == Qt.CheckState.Checked
+        }
+
+    def _update_buttons(self, *_args) -> None:
+        chosen = bool(self.checked_ids())
+        self.restore_button.setEnabled(chosen)
+        self.purge_button.setEnabled(chosen)
+
+    def _toggle_all(self) -> None:
+        state = Qt.CheckState.Unchecked if len(self.checked_ids()) == self.list.count() else Qt.CheckState.Checked
+        for index in range(self.list.count()):
+            self.list.item(index).setCheckState(state)
+
+    def _restore(self) -> None:
+        ids = self.checked_ids()
+        if ids:
+            self.restore_requested.emit(ids)
+
+    def _purge(self) -> None:
+        ids = self.checked_ids()
+        if ids and self._confirm(f"彻底删除选中的 {len(ids)} 条待办吗？删除后无法恢复。"):
+            self.purge_requested.emit(ids)
+
+    def _empty(self) -> None:
+        ids = {self.list.item(index).data(Qt.ItemDataRole.UserRole) for index in range(self.list.count())}
+        if ids and self._confirm(f"清空回收站里的 {len(ids)} 条待办吗？清空后无法恢复。"):
+            self.purge_requested.emit(ids)
+
+    def _confirm(self, question: str) -> bool:
+        answer = QMessageBox.question(
+            self, "待办回收站", question,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        theme.dark_title_bar(self)
+
+
+_TRASH_STYLE = f"""
+QListWidget {{
+    color: {theme.TEXT};
+    background: {theme.PANEL};
+    border: 1px solid {theme.LINE};
+    border-radius: 10px;
+    padding: 4px;
+    font-family: {theme.FONT};
+    font-size: 13px;
+    outline: none;
+}}
+QListWidget::item {{ padding: 6px 4px; border-bottom: 1px solid {theme.LINE}; }}
+QListWidget::item:selected {{ background: {theme.HOVER}; color: {theme.TEXT}; }}
+QPushButton:disabled {{ color: {theme.DISABLED}; }}
 """
