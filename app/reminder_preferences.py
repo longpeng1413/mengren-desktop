@@ -10,14 +10,20 @@ import shutil
 import struct
 import wave
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from app.config import RESOURCE_DIR
+from app.todo_model import DEFAULT_TITLE as DEFAULT_TODO_TITLE
+from app.todo_model import TodoItem
+from app.todo_model import from_values as todo_from_values
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
+
+
+KINDS = {"text", "image", "todo", "alarm", "stopwatch", "countdown"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +56,8 @@ class ReminderSettings:
     stopwatch_elapsed: int = 0
     stopwatch_started_at: str = ""
     stopwatch_running: bool = False
+    todo_title: str = DEFAULT_TODO_TITLE
+    todo_items: tuple[TodoItem, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,15 +206,18 @@ def save_reminders(reminders: list[ReminderSettings]) -> None:
 
 def new_reminder(kind: str) -> ReminderSettings:
     """Return a new independent desktop item with a stable identifier."""
-    if kind not in {"text", "image", "alarm", "stopwatch", "countdown"}:
+    if kind not in KINDS:
         raise ValueError("unsupported reminder kind")
-    return ReminderSettings(
+    reminder = ReminderSettings(
         reminder_id=uuid.uuid4().hex,
         kind=kind,
         enabled=True,
         show_status=kind in {"text", "image"},
         schedule_mode=kind if kind in {"alarm", "countdown"} else "none",
     )
+    if kind == "todo":
+        reminder = replace(reminder, text_color="#ebe8e1", font_size=15, text_width=340)
+    return reminder
 
 
 def _settings_from_values(values: dict) -> ReminderSettings:
@@ -214,7 +225,7 @@ def _settings_from_values(values: dict) -> ReminderSettings:
     if mode not in {"none", "alarm", "countdown"}:
         mode = "none"
     kind = str(values.get("kind", "text"))
-    if kind not in {"text", "image", "alarm", "stopwatch", "countdown"}:
+    if kind not in KINDS:
         kind = "text"
     color = str(values.get("text_color", "#fff4d6"))
     if len(color) != 7 or not color.startswith("#"):
@@ -259,6 +270,8 @@ def _settings_from_values(values: dict) -> ReminderSettings:
         stopwatch_elapsed=max(0, int(values.get("stopwatch_elapsed", 0))),
         stopwatch_started_at=str(values.get("stopwatch_started_at", "")),
         stopwatch_running=bool(values.get("stopwatch_running", False)),
+        todo_title=str(values.get("todo_title") or DEFAULT_TODO_TITLE)[:60],
+        todo_items=todo_from_values(values.get("todo_items", ())),
     )
 def import_reminder_asset(source: str, kind: str) -> str:
     """Copy a chosen image or audio file into stable application storage."""

@@ -60,6 +60,7 @@ from app.reminder_preferences import (
 from app.system_actions import open_calculator, put_computer_to_sleep
 from ui import theme
 from ui.color_picker import pick_color
+from ui.todo_widget import TodoListWidget
 from ui.translator_window import TranslatorWindow
 
 
@@ -88,6 +89,7 @@ class ReminderLauncher(QWidget):
 
     _ACTIONS = (
         ("贴文字", "text"),
+        ("待办", "todo"),
         ("贴图片", "image"),
         ("翻译", "translate"),
         ("闹钟", "alarm"),
@@ -1430,6 +1432,14 @@ class DesktopReminderManager:
                 )
             return
         reminder = new_reminder(kind)
+        if kind == "todo":
+            self._reminders[reminder.reminder_id] = reminder
+            self._persist()
+            self._show_widget(reminder)
+            widget = self._widgets.get(reminder.reminder_id)
+            if isinstance(widget, TodoListWidget):
+                widget.focus_input()
+            return
         if kind == "stopwatch":
             reminder = replace(
                 reminder,
@@ -1451,7 +1461,7 @@ class DesktopReminderManager:
 
     def _edit(self, reminder_id: str) -> None:
         reminder = self._reminders.get(reminder_id)
-        if reminder is None or reminder.kind == "stopwatch":
+        if reminder is None or reminder.kind in {"stopwatch", "todo"}:
             return
         dialog = ReminderEditorDialog(reminder, self._parent)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -1465,6 +1475,9 @@ class DesktopReminderManager:
         widget = self._widgets.get(reminder_id)
         if widget is not None:
             return widget
+        reminder = self._reminders.get(reminder_id)
+        if reminder is not None and reminder.kind == "todo":
+            return self._todo_widget_for(reminder_id)
         widget = DesktopReminderWidget()
         widget.set_always_on_top(self._tool_settings.always_on_top)
         widget.edit_requested.connect(lambda rid=reminder_id: self._edit(rid))
@@ -1503,6 +1516,34 @@ class DesktopReminderManager:
         )
         self._widgets[reminder_id] = widget
         return widget
+
+    def _todo_widget_for(self, reminder_id: str) -> "TodoListWidget":
+        widget = TodoListWidget()
+        widget.set_always_on_top(self._tool_settings.always_on_top)
+        widget.position_saved.connect(
+            lambda position, rid=reminder_id: self._save_position(rid, position)
+        )
+        widget.items_changed.connect(
+            lambda items, rid=reminder_id: self._replace(rid, todo_items=tuple(items))
+        )
+        widget.title_changed.connect(
+            lambda title, rid=reminder_id: self._replace(rid, todo_title=title)
+        )
+        widget.width_changed.connect(
+            lambda width, rid=reminder_id: self._replace(rid, text_width=width)
+        )
+        widget.appearance_changed.connect(
+            lambda color, size, rid=reminder_id: self._change_todo_look(rid, color, size)
+        )
+        widget.delete_requested.connect(lambda rid=reminder_id: self._delete(rid))
+        self._widgets[reminder_id] = widget
+        return widget
+
+    def _change_todo_look(self, reminder_id: str, color: str, size: int) -> None:
+        updated = self._replace(reminder_id, text_color=color, font_size=size)
+        widget = self._widgets.get(reminder_id)
+        if updated is not None and widget is not None:
+            widget.set_settings(updated)
 
     def _show_widget(self, reminder: ReminderSettings) -> None:
         widget = self._widget_for(reminder.reminder_id)

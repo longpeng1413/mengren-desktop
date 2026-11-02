@@ -6,10 +6,10 @@ import os
 import sys
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
-from app import autostart, logs, single_instance
-from app.branding import APP_DISPLAY_NAME
+from app import autostart, logs, single_instance, update_handoff
+from app.branding import APP_DISPLAY_NAME, APP_VERSION
 from app.hotkeys import GlobalHotkey
 from app.icon import application_icon
 from app.preferences import HotkeySettings, load_hotkey_settings, save_hotkey_settings
@@ -17,9 +17,11 @@ from app.presentation_hotkeys import PresentationHotkeys
 from app.qt_translation import install_chinese_translation
 from app.system_actions import put_computer_to_sleep, toggle_calculator
 from app.tray import ApplicationTray
+from core import update
 from core.capture.capture_service import CaptureService
 from ui.main_window import MainWindow
 from ui.reminder_widget import DesktopReminderManager
+from ui.update_dialog import UpdateChecker, UpdateDialog
 
 
 def _repair_startup_settings(settings: HotkeySettings) -> HotkeySettings:
@@ -71,6 +73,10 @@ def run() -> None:
     # Opening the app again (for example from the desktop icon while it sits in
     # the tray) only brings up the running copy's window; two copies would
     # fight over every global shortcut.
+    # Started by the old copy after an update: let it quit completely first.
+    handoff = None if smoke_test else update_handoff.parse_handoff(sys.argv)
+    if handoff is not None:
+        update_handoff.wait_for_exit(handoff.old_pid)
     instance_server = None
     if not smoke_test:
         if single_instance.notify_running_instance():
@@ -82,6 +88,8 @@ def run() -> None:
     log_cleanup.setInterval(logs.CLEANUP_INTERVAL_MS)
     log_cleanup.timeout.connect(logs.clean_logs)
     log_cleanup.start()
+    # A download interrupted by a crash or shutdown is never needed again.
+    update.clean_downloads()
     install_chinese_translation(app)
     icon = application_icon()
     app.setWindowIcon(icon)
@@ -184,6 +192,51 @@ def run() -> None:
     )
     if instance_server is not None:
         instance_server.show_requested.connect(tray.show_already_running)
+
+    updates = None
+    if not smoke_test:
+        updates = UpdateChecker(app)
+        announced: set[str] = set()
+
+        def offer_update(release) -> None:
+            window.show_update_available(release.version)
+            if release.version not in announced:
+                announced.add(release.version)
+                tray.show_update_message(release.version)
+
+        def open_update(release=None) -> None:
+            release = release or updates.latest
+            if release is None:
+                updates.check_now(manual=True)
+                return
+            window.show()
+            window.raise_()
+            UpdateDialog(release, window).exec()
+
+        def report_manual_check(release, error: str) -> None:
+            if release is not None:
+                open_update(release)
+            elif error:
+                QMessageBox.warning(window, APP_DISPLAY_NAME, f"检查更新失败：{error}")
+            else:
+                QMessageBox.information(
+                    window, APP_DISPLAY_NAME, f"已经是最新版本 v{update.current_version()}。"
+                )
+
+        updates.update_available.connect(offer_update)
+        updates.manual_check_finished.connect(report_manual_check)
+        window.update_requested.connect(open_update)
+        window.check_update_requested.connect(lambda: updates.check_now(manual=True))
+        updates.start()
+
+    if handoff is not None:
+        def finish_update() -> None:
+            current = update.running_exe()
+            if current is not None:
+                update_handoff.finish_update(handoff, current)
+            tray.show_info(f"已更新到 v{APP_VERSION}。")
+
+        QTimer.singleShot(1500, finish_update)
     app.installNativeEventFilter(hotkeys)
     app.installNativeEventFilter(presentation_hotkeys)
 

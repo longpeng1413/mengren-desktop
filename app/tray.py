@@ -104,6 +104,14 @@ class ApplicationTray(QSystemTrayIcon):
             6000,
         )
 
+    def show_info(self, message: str) -> None:
+        """Show a short information balloon."""
+        self.showMessage(APP_DISPLAY_NAME, message, QSystemTrayIcon.MessageIcon.Information, 5000)
+
+    def show_update_message(self, version: str) -> None:
+        """Tell the user a newer version is on GitHub."""
+        self.show_info(f"发现新版本 v{version}。打开主窗口，点击“发现新版本”即可一键更新。")
+
     def show_already_running(self) -> None:
         """Answer a second launch: show the window and say the app is running."""
         self._show_window()

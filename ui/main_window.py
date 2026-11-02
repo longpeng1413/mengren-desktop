@@ -12,7 +12,7 @@ import ctypes
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QStandardPaths, Qt, QUrl
+from PySide6.QtCore import QStandardPaths, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QFrame,
@@ -33,6 +33,7 @@ from app.display_diagnostics import collect_display_diagnostics
 from app.icon import application_icon
 from app.preferences import HotkeySettings
 from core.capture.capture_service import CaptureService
+from core.update import REPOSITORY, REPOSITORY_URL
 from ui.hotkey_dialog import HotkeyDialog
 from ui.translation_settings_dialog import TranslationSettingsDialog
 from ui.usage_guide_dialog import UsageGuideDialog
@@ -95,6 +96,19 @@ QPushButton#plainButton:hover, QPushButton#smallButton:hover {{
     background: #23232a;
     border-color: #8f8c85;
 }}
+QPushButton#updateButton {{
+    color: #0b1a12;
+    background: {ACCENT};
+    border: 1px solid {ACCENT};
+    border-radius: 8px;
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 0 10px;
+    min-height: 26px;
+}}
+QPushButton#updateButton:hover {{ background: #7fd3aa; }}
+QLabel#link {{ color: #8f8c85; font-size: 12px; }}
 QFrame#panel {{ background: #151518; border: 1px solid #2a2a31; border-radius: 10px; }}
 QScrollArea#tipsArea {{ background: transparent; border: none; }}
 QWidget#tips {{ background: transparent; }}
@@ -109,6 +123,9 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: tran
 
 class MainWindow(QMainWindow):
     """Provides a visible launcher while global shortcuts remain active."""
+
+    update_requested = Signal()
+    check_update_requested = Signal()
 
     def __init__(
         self,
@@ -145,10 +162,17 @@ class MainWindow(QMainWindow):
         self._status_label.setWordWrap(True)
         self._extra_keys = QLabel()
         self._extra_keys.setObjectName("muted")
+        self._update_button = QPushButton("发现新版本")
+        self._update_button.setObjectName("updateButton")
+        self._update_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_button.setToolTip("查看新版本并一键更新")
+        self._update_button.clicked.connect(self.update_requested.emit)
+        self._update_button.hide()
         name_row = QHBoxLayout()
         name_row.addWidget(title)
         name_row.addWidget(version, 0, Qt.AlignmentFlag.AlignBottom)
         name_row.addStretch()
+        name_row.addWidget(self._update_button)
         names = QVBoxLayout()
         names.setSpacing(2)
         names.addLayout(name_row)
@@ -166,7 +190,7 @@ class MainWindow(QMainWindow):
             "长截图", "自动分段滚动并拼接\n到底自动完成"
         )
         reminder_button, self._reminder_key = self._card(
-            "桌面工具", "贴文字、贴图片、翻译\n闹钟、计时器、倒计时"
+            "桌面工具", "贴文字、待办、贴图片、翻译\n闹钟、计时器、倒计时"
         )
         presentation_button, self._presentation_key = self._card(
             "教鞭模式", "在屏幕上用画笔标注\n随时切回鼠标操作"
@@ -226,7 +250,7 @@ class MainWindow(QMainWindow):
         self._presentation_help = QLabel()
         self._update_presentation_help("")
         reminder_help = QLabel(
-            "桌面工具：按 F3 后选择贴文字、贴图片、翻译、闹钟、计时器或倒计时。"
+            "桌面工具：按 F3 后选择贴文字、待办、贴图片、翻译、闹钟、计时器或倒计时。"
             "挂件保持在普通窗口底层；其他窗口只遮住重叠区域，未被遮挡的部分仍可看见。"
             "只有按住挂件拖动时才会移动。计时器提供开始、暂停/继续、重置和取消按钮，"
             "倒计时在相同按钮之外还可直接修改。"
@@ -282,8 +306,29 @@ class MainWindow(QMainWindow):
         tips_title.addWidget(guide_button)
         layout.addLayout(tips_title)
         layout.addWidget(tips_panel, 1)
+
+        # Where to download new versions, and a manual update check.
+        link = QLabel(
+            f'GitHub：<a href="{REPOSITORY_URL}" style="color:{ACCENT}; text-decoration:none;">'
+            f"{REPOSITORY}</a>"
+        )
+        link.setObjectName("link")
+        link.setOpenExternalLinks(True)
+        link.setToolTip("打开 GitHub 仓库，可下载最新版本")
+        check_button = self._button("检查更新", small=True)
+        check_button.clicked.connect(self.check_update_requested.emit)
+        footer = QHBoxLayout()
+        footer.addWidget(link)
+        footer.addStretch()
+        footer.addWidget(check_button)
+        layout.addLayout(footer)
         self.setCentralWidget(content)
         center_on_cursor_screen(self)
+
+    def show_update_available(self, version: str) -> None:
+        """Show the green button that opens the update window."""
+        self._update_button.setText(f"发现新版本 v{version}")
+        self._update_button.show()
 
     @staticmethod
     def _card(title: str, description: str) -> tuple[QPushButton, QLabel]:
