@@ -45,10 +45,15 @@ These rules apply to every future modification in this project.
 - To publish: build with `-Zip`, commit, tag `v<version>`, push, then
   `gh release create v<version>` with `dist\mengren-desktop-v<version>-windows-x64.zip` and
   `dist\SHA256SUMS.txt`, titled `猛人桌面助手 v<version> 正式版`.
-- After each release, install it for the developer: unzip it to `D:\yingyong\mengren-desktop-v<version>-windows-x64\`,
-  start it, check the Windows startup entry points at it (360 security may delete the entry), move the
-  previous version's folders and zip to the Recycle Bin, and point the desktop shortcut
-  `猛人桌面助手.lnk` at the new EXE (one shortcut, updated every release).
+- Once tests, build and smoke test pass, publish straight away without asking (developer's rule,
+  2026-11-09). Do not install the release by hand or stop the developer's running copy: the developer
+  installs it with the in-app auto-update (which unzips it beside the old folder, re-points the startup
+  entry and the desktop shortcut `猛人桌面助手.lnk`, and recycles the old folder) and tests it then.
+  Exceptions, ask first: the change touches auto-update itself, the developer asked for a test build,
+  or a problem is unresolved.
+- After publishing, remove what the work left behind: delete `build\`, move the previous version's
+  folder and zip in `dist\` to the Recycle Bin (keep the current version's), and clear temporary
+  scripts, screenshots and test data.
 - Do not deliver a release until tests pass, the build finishes without errors and the packaged
   EXE starts. Always launch it with `scripts\smoke_test.ps1`, never by hand: the developer's own
   copy is usually running, so the script starts the test copy in smoke-test mode

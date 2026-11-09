@@ -31,12 +31,15 @@ from ui import theme
 _log = logging.getLogger(__name__)
 _CHEVRON = (RESOURCE_DIR / "icons" / "chevron_down.svg").as_posix()
 
-_STYLE = f"""
-#translatorWindow {{ background: {theme.BACKGROUND}; }}
-#translatorWindow QLabel {{ color: {theme.TEXT}; font-family: {theme.FONT}; font-size: 13px; }}
-#translatorWindow QLabel#muted {{ color: {theme.MUTED}; font-size: 12px; }}
-#translatorWindow QLabel#title {{ font-size: 16px; font-weight: 600; }}
-#translatorWindow QPlainTextEdit {{
+
+def tool_window_style(name: str) -> str:
+    """Dark style shared by the F3 tool windows (translator, currency)."""
+    return f"""
+#{name} {{ background: {theme.BACKGROUND}; }}
+#{name} QLabel {{ color: {theme.TEXT}; font-family: {theme.FONT}; font-size: 13px; }}
+#{name} QLabel#muted {{ color: {theme.MUTED}; font-size: 12px; }}
+#{name} QLabel#title {{ font-size: 16px; font-weight: 600; }}
+#{name} QPlainTextEdit {{
     color: {theme.TEXT};
     background: {theme.PANEL};
     border: 1px solid {theme.LINE};
@@ -46,8 +49,8 @@ _STYLE = f"""
     font-size: 14px;
     selection-background-color: #2f5a46;
 }}
-#translatorWindow QPlainTextEdit:focus {{ border-color: {theme.ACCENT}; }}
-#translatorWindow QComboBox {{
+#{name} QPlainTextEdit:focus {{ border-color: {theme.ACCENT}; }}
+#{name} QComboBox {{
     color: {theme.TEXT};
     background: {theme.RAISED};
     border: 1px solid {theme.LINE};
@@ -58,10 +61,10 @@ _STYLE = f"""
     font-family: {theme.FONT};
     font-size: 13px;
 }}
-#translatorWindow QComboBox:hover {{ border-color: {theme.ACCENT}; }}
-#translatorWindow QComboBox::drop-down {{ border: none; width: 24px; }}
-#translatorWindow QComboBox::down-arrow {{ image: url({_CHEVRON}); width: 12px; height: 12px; }}
-#translatorWindow QComboBox QAbstractItemView {{
+#{name} QComboBox:hover {{ border-color: {theme.ACCENT}; }}
+#{name} QComboBox::drop-down {{ border: none; width: 24px; }}
+#{name} QComboBox::down-arrow {{ image: url({_CHEVRON}); width: 12px; height: 12px; }}
+#{name} QComboBox QAbstractItemView {{
     color: {theme.TEXT};
     background: {theme.RAISED};
     border: 1px solid {theme.LINE};
@@ -69,7 +72,7 @@ _STYLE = f"""
     selection-color: {theme.ACCENT_INK};
     outline: none;
 }}
-#translatorWindow QPushButton {{
+#{name} QPushButton {{
     color: {theme.TEXT};
     background: {theme.RAISED};
     border: 1px solid {theme.LINE};
@@ -79,22 +82,25 @@ _STYLE = f"""
     font-family: {theme.FONT};
     font-size: 13px;
 }}
-#translatorWindow QPushButton:hover {{ background: {theme.HOVER}; border-color: {theme.MUTED}; }}
-#translatorWindow QPushButton:disabled {{ color: {theme.DISABLED}; }}
-#translatorWindow QPushButton#primaryButton {{
+#{name} QPushButton:hover {{ background: {theme.HOVER}; border-color: {theme.MUTED}; }}
+#{name} QPushButton:disabled {{ color: {theme.DISABLED}; }}
+#{name} QPushButton#primaryButton {{
     color: {theme.ACCENT_INK};
     background: {theme.ACCENT};
     border-color: {theme.ACCENT};
     font-weight: 600;
     min-width: 96px;
 }}
-#translatorWindow QPushButton#primaryButton:hover {{ background: #7fd3aa; }}
-#translatorWindow QPushButton#primaryButton:disabled {{ color: {theme.ACCENT_INK}; background: #3e6b55; }}
+#{name} QPushButton#primaryButton:hover {{ background: #7fd3aa; }}
+#{name} QPushButton#primaryButton:disabled {{ color: {theme.ACCENT_INK}; background: #3e6b55; }}
 QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {theme.LINE}; border-radius: 3px; min-height: 30px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 """
+
+
+_STYLE = tool_window_style("translatorWindow")
 
 
 class _Worker(QObject):

@@ -110,8 +110,9 @@ def test_desktop_launcher_matches_f1_button_size_and_uses_larger_font() -> None:
         "alarm",
         "stopwatch",
         "countdown",
-        "sleep",
         "calculator",
+        "currency",
+        "sleep",
     }
     assert [button.text() for button in launcher.buttons.values()] == [
         "待办",
@@ -121,8 +122,9 @@ def test_desktop_launcher_matches_f1_button_size_and_uses_larger_font() -> None:
         "闹钟",
         "计时器",
         "倒计时",
-        "睡眠",
         "计算器",
+        "汇率",
+        "睡眠",
     ]
     assert launcher.drag_handle.text() == "移动"
     assert launcher.display_mode_button.text() == "桌面"

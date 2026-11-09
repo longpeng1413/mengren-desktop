@@ -60,6 +60,7 @@ from app.reminder_preferences import (
 from app.system_actions import open_calculator, put_computer_to_sleep
 from ui import theme
 from ui.color_picker import pick_color
+from ui.currency_window import CurrencyWindow
 from ui.todo_widget import TodoListWidget
 from ui.translator_window import TranslatorWindow
 
@@ -95,8 +96,9 @@ class ReminderLauncher(QWidget):
         ("闹钟", "alarm"),
         ("计时器", "stopwatch"),
         ("倒计时", "countdown"),
-        ("睡眠", "sleep"),
         ("计算器", "calculator"),
+        ("汇率", "currency"),
+        ("睡眠", "sleep"),
     )
 
     def __init__(self) -> None:
@@ -1352,6 +1354,7 @@ class DesktopReminderManager:
         }
         self._widgets: dict[str, DesktopReminderWidget] = {}
         self._translator: TranslatorWindow | None = None
+        self._currency: CurrencyWindow | None = None
         self._launcher = ReminderLauncher()
         self._launcher.action_requested.connect(self._create_action)
         self._launcher.display_mode_toggle_requested.connect(
@@ -1404,6 +1407,12 @@ class DesktopReminderManager:
             self._translator = TranslatorWindow()
         self._translator.open()
 
+    def open_currency(self) -> None:
+        """Show the currency calculator, created on first use."""
+        if self._currency is None:
+            self._currency = CurrencyWindow()
+        self._currency.open()
+
     def open_editor(self) -> None:
         """Backward-compatible name used by older launcher wiring."""
         self.open_launcher()
@@ -1411,6 +1420,9 @@ class DesktopReminderManager:
     def _create_action(self, kind: str) -> None:
         if kind == "translate":
             self.open_translator()
+            return
+        if kind == "currency":
+            self.open_currency()
             return
         if kind == "calculator":
             if not self._calculator_handler():
