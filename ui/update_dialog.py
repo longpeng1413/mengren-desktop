@@ -36,6 +36,19 @@ FIRST_CHECK_MS = 15 * 1000
 CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000
 
 
+def quit_now() -> None:
+    """End the app for certain, without asking each window to close first.
+
+    ``QApplication.quit()`` first asks every visible window to close and gives
+    up if one refuses. The main window always refuses (closing it only hides it
+    to the tray), so with the main window and a to-do list on screen the old
+    copy stayed running after an update and the new one never appeared.
+    ``exit()`` leaves every event loop directly; ``aboutToQuit`` still runs, so
+    widgets are saved and shortcuts released as usual.
+    """
+    QApplication.exit(0)
+
+
 class _CheckWorker(QObject):
     finished = Signal(object, str)
 
@@ -288,7 +301,7 @@ class UpdateDialog(QDialog):
             self._show_failure(f"新版本已安装到 {new_exe.parent}，但没能自动启动：{error}")
             return
         _log.info("已启动新版本 %s，当前版本退出", new_exe)
-        QTimer.singleShot(300, QApplication.quit)
+        QTimer.singleShot(300, quit_now)
 
     def _show_failure(self, message: str) -> None:
         self.status.setText(f"<span style='color:{theme.DANGER}'>{message}</span>")

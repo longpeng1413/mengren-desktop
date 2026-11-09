@@ -22,7 +22,7 @@ from core import update
 from core.capture.capture_service import CaptureService
 from ui.main_window import MainWindow
 from ui.reminder_widget import DesktopReminderManager
-from ui.update_dialog import UpdateChecker, UpdateDialog
+from ui.update_dialog import UpdateChecker, UpdateDialog, quit_now
 
 
 def _repair_startup_settings(settings: HotkeySettings) -> HotkeySettings:
@@ -76,14 +76,17 @@ def run() -> None:
     # fight over every global shortcut.
     # Started by the old copy after an update: let it quit completely first.
     handoff = None if smoke_test else update_handoff.parse_handoff(sys.argv)
+    handoff_result = ""
     if handoff is not None:
-        update_handoff.wait_for_exit(handoff.old_pid)
+        handoff_result = update_handoff.end_old_copy(handoff)
     instance_server = None
     if not smoke_test:
         if single_instance.notify_running_instance():
             return
         instance_server = single_instance.InstanceServer(parent=app)
     logs.setup_logging()
+    if handoff_result:
+        logging.getLogger(__name__).info("更新交接：%s", handoff_result)
     # The tray app may run for weeks: clean old log files once a day as well.
     log_cleanup = QTimer(app)
     log_cleanup.setInterval(logs.CLEANUP_INTERVAL_MS)
@@ -184,7 +187,7 @@ def run() -> None:
     window.setWindowIcon(icon)
     tray = ApplicationTray(
         window,
-        app.quit,
+        quit_now,
         window.open_hotkey_dialog,
         window.open_translation_settings,
         autostart.is_enabled(),

@@ -1,8 +1,8 @@
 """Hand over from the old copy to the freshly installed one.
 
 The old copy starts the new EXE with ``--after-update <pid> --previous <exe>``
-and quits. The new copy waits for that process to end before it registers any
-shortcut, then points desktop shortcuts at itself and moves the old version's
+and quits. The new copy waits for that process to end (at most 10 seconds; an
+old copy still running then is closed) before it registers any shortcut, then points desktop shortcuts at itself and moves the old version's
 folder to the Recycle Bin (only a folder this updater created).
 """
 
@@ -23,6 +23,8 @@ _log = logging.getLogger(__name__)
 AFTER_UPDATE = "--after-update"
 PREVIOUS = "--previous"
 _SYNCHRONIZE = 0x00100000
+_PROCESS_TERMINATE = 0x0001
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _DETACHED_PROCESS = 0x00000008
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 _CREATE_NO_WINDOW = 0x08000000
@@ -65,10 +67,32 @@ def parse_handoff(arguments: list[str]) -> Handoff | None:
     return Handoff(pid, previous)
 
 
-def wait_for_exit(pid: int, timeout_seconds: float = 20) -> bool:
+# The developer's limit: the new copy appears within about 10 seconds.
+OLD_COPY_TIMEOUT_SECONDS = 10.0
+
+
+def _kernel32():
+    # A private instance, so these prototypes never change ctypes.windll for others.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    kernel32.TerminateProcess.restype = wintypes.BOOL
+    kernel32.QueryFullProcessImageNameW.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)
+    )
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    return kernel32
+
+
+def wait_for_exit(pid: int, timeout_seconds: float = OLD_COPY_TIMEOUT_SECONDS) -> bool:
     """Wait until the old copy has quit; return whether it did in time."""
     try:
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = _kernel32()
         handle = kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
         if not handle:
             return True  # Already gone.
@@ -78,6 +102,43 @@ def wait_for_exit(pid: int, timeout_seconds: float = 20) -> bool:
             kernel32.CloseHandle(handle)
     except (AttributeError, OSError):
         return True
+
+
+def _same_file(first: Path, second: Path) -> bool:
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+
+
+def end_old_copy(handoff: Handoff, timeout_seconds: float = OLD_COPY_TIMEOUT_SECONDS) -> str:
+    """Wait for the old copy; if it still runs after the timeout, close it.
+
+    Only the process running the previous version's EXE is ever closed: a
+    process id can be reused, so anything else is left alone. Returns a short
+    description for the log (logging is not set up yet when this runs).
+    """
+    if wait_for_exit(handoff.old_pid, timeout_seconds):
+        return "旧版本已退出"
+    try:
+        kernel32 = _kernel32()
+        handle = kernel32.OpenProcess(
+            _PROCESS_TERMINATE | _SYNCHRONIZE | _PROCESS_QUERY_LIMITED_INFORMATION, False, handoff.old_pid
+        )
+        if not handle:
+            return "旧版本已退出"
+        try:
+            size = wintypes.DWORD(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                return f"旧版本 {timeout_seconds:g} 秒内没有退出，且无法确认进程，未强制关闭"
+            if not _same_file(Path(buffer.value), handoff.previous_exe):
+                return "旧版本已退出（原进程号已被其他程序使用）"
+            if not kernel32.TerminateProcess(handle, 1):
+                return f"旧版本 {timeout_seconds:g} 秒内没有退出，强制关闭失败"
+            kernel32.WaitForSingleObject(handle, 5000)
+            return f"旧版本 {timeout_seconds:g} 秒内没有退出，已强制关闭"
+        finally:
+            kernel32.CloseHandle(handle)
+    except (AttributeError, OSError) as error:
+        return f"等待旧版本退出时出错：{error!r}"
 
 
 def finish_update(handoff: Handoff, new_exe: Path) -> list[str]:

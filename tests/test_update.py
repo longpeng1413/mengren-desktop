@@ -400,3 +400,111 @@ def test_many_checks_in_a_row_never_crash(monkeypatch) -> None:
 
     assert _wait_for(lambda: checker._thread is None)
     assert len(finished) == 150
+
+
+# The old copy must quit by itself after an update, even with the main window
+# (which refuses to close: it only hides to the tray) and a desktop widget on
+# screen. QApplication.quit() gave up in exactly that case.
+_QUIT_SCENARIO = r'''
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QApplication, QWidget
+from core.update import ReleaseInfo
+from ui import update_dialog
+
+if sys.argv[2] == "old":
+    update_dialog.quit_now = QApplication.quit
+update_dialog.launch_new_version = lambda new, old: None
+app = QApplication([])
+app.setQuitOnLastWindowClosed(False)
+
+class Main(QWidget):
+    def closeEvent(self, event):
+        event.ignore()
+        self.hide()
+
+for _ in range(2):
+    sticker = QWidget()
+    sticker.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+    sticker.show()
+main = Main()
+main.show()
+dialog = update_dialog.UpdateDialog(ReleaseInfo("99.0", "", "", "", "", 0, ""), main)
+app.aboutToQuit.connect(lambda: print("ABOUT_TO_QUIT", flush=True))
+QTimer.singleShot(200, lambda: dialog._restart(Path("new.exe")))
+QTimer.singleShot(0, dialog.exec)
+app.exec()
+print("EXITED", flush=True)
+'''
+
+
+def _run_quit_scenario(tmp_path, variant: str):
+    import subprocess
+    import sys
+
+    script = tmp_path / "quit_scenario.py"
+    script.write_text(_QUIT_SCENARIO, encoding="utf-8")
+    root = str(Path(__file__).resolve().parent.parent)
+    # The real Windows platform: the offscreen one never showed the hang.
+    env = dict(__import__("os").environ)
+    env.pop("QT_QPA_PLATFORM", None)
+    return subprocess.run(
+        [sys.executable, str(script), root, variant],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        env=env,
+    )
+
+
+def test_old_copy_quits_after_update_even_with_main_window_and_widgets(tmp_path) -> None:
+    result = _run_quit_scenario(tmp_path, "new")
+    assert "ABOUT_TO_QUIT" in result.stdout  # widgets saved, shortcuts released
+    assert "EXITED" in result.stdout
+
+
+def _ping_process():
+    import shutil
+    import subprocess
+
+    ping = shutil.which("ping")
+    assert ping
+    return Path(ping), subprocess.Popen([ping, "-n", "30", "127.0.0.1"], stdout=subprocess.DEVNULL)
+
+
+def test_the_new_copy_closes_an_old_copy_that_does_not_quit() -> None:
+    from app.update_handoff import end_old_copy
+
+    exe, process = _ping_process()
+    try:
+        started = time.monotonic()
+        result = end_old_copy(Handoff(process.pid, exe), timeout_seconds=0.5)
+        assert "已强制关闭" in result
+        assert process.wait(timeout=5) is not None
+        assert time.monotonic() - started < 5
+    finally:
+        process.kill()
+
+
+def test_the_new_copy_never_closes_an_unrelated_process() -> None:
+    from app.update_handoff import end_old_copy
+
+    _exe, process = _ping_process()
+    try:
+        result = end_old_copy(Handoff(process.pid, Path(r"C:\elsewhere\old.exe")), timeout_seconds=0.3)
+        assert "其他程序" in result
+        assert process.poll() is None
+    finally:
+        process.kill()
+
+
+def test_an_old_copy_that_already_quit_needs_no_waiting() -> None:
+    from app.update_handoff import OLD_COPY_TIMEOUT_SECONDS, end_old_copy
+
+    exe, process = _ping_process()
+    process.kill()
+    process.wait()
+    assert OLD_COPY_TIMEOUT_SECONDS == 10
+    assert end_old_copy(Handoff(process.pid, exe)) == "旧版本已退出"
