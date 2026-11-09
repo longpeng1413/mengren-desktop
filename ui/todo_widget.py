@@ -1,6 +1,7 @@
 """Desktop to-do list widget for the F3 desktop tools.
 
-Closed, the list is only a pull cord on the desktop: drag its hook to move it,
+Closed, the list is only a pull cord on the desktop whose knob shows the
+list's name (the title at its top left): drag its hook to move it,
 click or pull its knob down to open the list, which then hangs from the hook
 and shows everything; click the hook or "收起" to hide it again.
 
@@ -59,6 +60,7 @@ DRAG_DISTANCE = 6
 FONT_SIZES = (("小", 13), ("中", 15), ("大", 17), ("特大", 20))
 
 DONE_GREEN = "#4cc38a"
+DEFAULT_NAME = todo_model.DEFAULT_TITLE
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,7 +374,7 @@ class _PullCord(QWidget):
         self._start_position = QPoint()
         self._mode = ""
         self._moved = False
-        self._count = 0
+        self.name = DEFAULT_NAME
         self.style = pull_cord_art.style(TODO_CORD)
         self.setFixedWidth(self.style.width)
         self._resize()
@@ -381,14 +383,18 @@ class _PullCord(QWidget):
     def busy(self) -> bool:
         return self._press is not None
 
-    def set_state(self, collapsed: bool, open_count: int, style_key: str) -> None:
+    def set_state(self, collapsed: bool, style_key: str, name: str) -> None:
+        """Closed, the knob shows the list's name and is as wide as it needs."""
         self.collapsed = collapsed
-        self._count = open_count
+        self.name = name.strip() or DEFAULT_NAME
         self.style = pull_cord_art.style(style_key)
-        self.setFixedWidth(self.style.width)
+        if collapsed:
+            self.setFixedWidth(pull_cord_art.knob_width(self.style, self.name))
+        else:
+            self.setFixedWidth(self.style.width)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(
-            "点一下或按住往下拉，打开待办；按住顶部挂钩拖动可移动位置"
+            f"{self.name}：点一下或按住往下拉，打开待办；按住顶部挂钩拖动可移动位置"
             if collapsed
             else "点挂钩收起待办；按住挂钩拖动可移动位置"
         )
@@ -410,7 +416,7 @@ class _PullCord(QWidget):
         knob_top = self.height() - (self.style.knob_height if self.collapsed else 0)
         if self.collapsed:
             area = QRectF(0, knob_top, self.width(), self.style.knob_height)
-            self.style.draw_knob(painter, area, self._count)
+            self.style.draw_knob(painter, area, self.name)
             end = knob_top + self.style.attach
         else:
             end = knob_top + 2
@@ -732,8 +738,7 @@ class TodoListWidget(QWidget):
         self.collapsed_changed.emit(collapsed)
 
     def _apply_state(self) -> None:
-        open_count, _done = todo_model.counts(self._items)
-        self.cord.set_state(self._collapsed, open_count, self._settings.todo_cord_style)
+        self.cord.set_state(self._collapsed, self._settings.todo_cord_style, self.title.text())
         self._card.setVisible(not self._collapsed)
         if self._collapsed:
             self.setFixedWidth(self.cord.width())

@@ -531,8 +531,13 @@ def test_every_cord_style_draws_and_sets_its_width() -> None:
         widget = _cord_widget("a")
         widget.set_settings(replace(widget._settings, todo_cord_style=key))
         QApplication.processEvents()
-        assert widget.cord.width() == pull_cord_art.style(key).width
+        cord = pull_cord_art.style(key)
+        assert widget.cord.width() == pull_cord_art.knob_width(cord, widget.title.text())
+        assert widget.cord.width() >= cord.width and widget.cord.width() % 2 == 0
         assert not widget.cord.grab().isNull()
+        widget.expand()
+        QApplication.processEvents()
+        assert widget.cord.width() == pull_cord_art.style(key).width
         widget.close()
 
 
@@ -548,6 +553,53 @@ def test_trash_button_sits_in_the_title_bar_and_the_cord_is_short() -> None:
     assert widget._header.isAncestorOf(widget.trash_button)
     widget.close()
 
+
+def test_a_closed_list_shows_only_its_name_on_the_knob(monkeypatch) -> None:
+    from ui import pull_cord_art
+
+    drawn = []
+    for key, cord in pull_cord_art.STYLES.items():
+        monkeypatch.setitem(
+            pull_cord_art.STYLES,
+            key,
+            replace(cord, draw_knob=lambda painter, area, name, draw=cord.draw_knob: (drawn.append(name), draw(painter, area, name))),
+        )
+    widget = _cord_widget("a", "b", "c")
+    widget.set_settings(replace(widget._settings, todo_title="工作"))
+    QApplication.processEvents()
+    assert widget.cord.name == "工作"
+    assert "工作" in widget.cord.toolTip()
+    drawn.clear()
+    widget.cord.grab()
+    # Only the name is drawn, never how many items are open.
+    assert drawn and set(drawn) == {"工作"}
+    style = pull_cord_art.style(widget._settings.todo_cord_style)
+    assert widget.cord.height() == pull_cord_art.MOUNT_HEIGHT + 10 + style.knob_height
+
+    # Renamed while open: the closed cord shows the new name.
+    widget.expand()
+    QApplication.processEvents()
+    widget.begin_title_edit()
+    widget.title_editor.setText("家里的事")
+    widget.title_editor.committed.emit(widget.title_editor.text())
+    widget.collapse()
+    QApplication.processEvents()
+    assert widget.cord.name == "家里的事"
+
+    # A very long name is cut short instead of making the cord very wide.
+    hook = _hook(widget)
+    widget.set_settings(replace(widget._settings, todo_title="很长" * 30))
+    QApplication.processEvents()
+    assert widget.cord.width() <= pull_cord_art.MAX_KNOB_WIDTH
+    assert widget.width() == widget.cord.width()
+    assert not widget.cord.grab().isNull()
+
+    # Clicking the name on the knob opens the list.
+    knob = QPoint(widget.cord.width() // 2, widget.cord.height() - 10)
+    QTest.mouseClick(widget.cord, Qt.MouseButton.LeftButton, pos=knob)
+    assert not widget.collapsed
+    assert _hook(widget).y() == hook.y()
+    widget.close()
 
 
 def test_old_lists_move_to_twenty_once_and_rows_sit_closer() -> None:
