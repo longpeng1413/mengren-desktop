@@ -17,8 +17,9 @@ class FakeDesktop:
     def read(self):
         return self.icons
 
-    def restore(self, icons):
+    def restore(self, icons, legacy=False):
         assert icons == self.icons
+        assert not legacy
         return 2, 0, 0, 0
 
 
@@ -58,7 +59,7 @@ def test_restore_matches_names_and_leaves_new_icons_alone():
     desktop.u = type("Api", (), {"GetWindowLongW": lambda *_: 0})()
     states = iter([{"B": [1, 1], "new": [5, 5], "A": [2, 2]},
                    {"B": [30, 40], "new": [5, 5], "A": [10, 20]}])
-    desktop.read = lambda: next(states)
+    desktop.read = lambda legacy=False: next(states)
     points = []
     moves = []
     desktop._write = lambda _address, point: points.append((point.x, point.y))
@@ -74,3 +75,73 @@ def test_restore_rejects_automatic_arrangement():
     desktop.u = type("Api", (), {"GetWindowLongW": lambda *_: 0x100})()
     with pytest.raises(desktop_layout.LayoutError, match="自动排列"):
         desktop.restore({"A": [1, 2]})
+
+
+def test_same_display_names_use_distinct_shell_identities(monkeypatch):
+    desktop = desktop_layout.DesktopIcons()
+    desktop.memory = 1000
+    monkeypatch.setattr(desktop_layout, "desktop_identities", lambda: [
+        (r"C:\Desktop\example", [10, 20]),
+        (r"C:\Desktop\example.lnk", [30, 40]),
+    ])
+    desktop._write = lambda *_: None
+    current = {"index": 0}
+
+    def send(message, index=0, lparam=0):
+        if message == 0x1004:
+            return 2
+        current["index"] = index
+        return 1
+
+    def read(_address, value):
+        if isinstance(value, desktop_layout.wintypes.POINT):
+            value.x, value.y = [(10, 20), (30, 40)][current["index"]]
+        else:
+            value.value = "example"
+
+    desktop._send, desktop._read = send, read
+    assert desktop.read() == {r"C:\Desktop\example": [10, 20],
+                              r"C:\Desktop\example.lnk": [30, 40]}
+
+
+def test_old_layout_uses_legacy_names(monkeypatch, tmp_path):
+    class LegacyDesktop(FakeDesktop):
+        def restore(self, icons, legacy=False):
+            assert legacy and icons == {"A": [10, 20]}
+            return 1, 0, 0, 0
+
+    monkeypatch.setattr(desktop_layout, "DesktopIcons", LegacyDesktop)
+    monkeypatch.setattr(desktop_layout, "settings_directory", lambda: tmp_path)
+    (tmp_path / "desktop_icon_layout.json").write_text(json.dumps({"version": 1, "icons": {"A": [10, 20]}}))
+    assert desktop_layout.restore_layout() == (1, 0, 0, 0)
+
+
+def test_same_named_items_restore_by_identity_after_order_changes():
+    desktop = desktop_layout.DesktopIcons()
+    desktop.hwnd, desktop.memory = 1, 123
+    desktop.u = type("Api", (), {"GetWindowLongW": lambda *_: 0})()
+    folder, shortcut = r"C:\Desktop\same", r"C:\Desktop\same.lnk"
+    states = iter([{shortcut: [1, 2], folder: [3, 4]},
+                   {folder: [10, 20], shortcut: [30, 40]}])
+    desktop.read = lambda legacy=False: next(states)
+    moves = []
+    desktop._write = lambda _, point: moves.append((point.x, point.y))
+    desktop._send = lambda *_: 1
+    assert desktop.restore({folder: [10, 20], shortcut: [30, 40]}) == (2, 0, 0, 0)
+    assert moves == [(30, 40), (10, 20)]
+
+
+def test_disagreeing_shell_and_list_positions_are_not_saved(monkeypatch):
+    desktop = desktop_layout.DesktopIcons()
+    desktop.memory = 1000
+    monkeypatch.setattr(desktop_layout, "desktop_identities", lambda: [("A", [1, 2])])
+    desktop._write = lambda *_: None
+    desktop._send = lambda message, *_: 1
+    def read(_address, value):
+        if isinstance(value, desktop_layout.wintypes.POINT):
+            value.x, value.y = 4, 5
+        else:
+            value.value = "A"
+    desktop._read = read
+    with pytest.raises(desktop_layout.LayoutError, match="正在变化"):
+        desktop.read()

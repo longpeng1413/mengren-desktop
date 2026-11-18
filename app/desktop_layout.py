@@ -9,6 +9,7 @@ import sys
 import tempfile
 
 from app.reminder_preferences import settings_directory
+from app.desktop_shell import ShellError, desktop_identities
 
 
 class LayoutError(Exception):
@@ -42,7 +43,7 @@ def save_layout():
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
                                          delete=False) as file:
             temp = file.name
-            json.dump({"version": 1, "icons": icons}, file, ensure_ascii=False)
+            json.dump({"version": 2, "icons": icons}, file, ensure_ascii=False)
         os.replace(temp, path)
     finally:
         if temp and os.path.exists(temp):
@@ -54,7 +55,7 @@ def restore_layout():
     try:
         data = json.loads(_path().read_text(encoding="utf-8"))
         icons = data["icons"]
-        if data["version"] != 1 or not isinstance(icons, dict) or not icons:
+        if data["version"] not in (1, 2) or not isinstance(icons, dict) or not icons:
             raise ValueError()
         for name, point in icons.items():
             if not isinstance(name, str) or not isinstance(point, list) or len(point) != 2 or any(type(v) is not int or abs(v) > 100000 for v in point):
@@ -64,7 +65,7 @@ def restore_layout():
     except (OSError, ValueError, KeyError, TypeError):
         raise LayoutError("保存的图标布局无法读取，请重新保存。") from None
     with DesktopIcons() as desktop:
-        return desktop.restore(icons)
+        return desktop.restore(icons, legacy=data["version"] == 1)
 
 
 class DesktopIcons:
@@ -134,9 +135,18 @@ class DesktopIcons:
         if not self.k.ReadProcessMemory(self.process, address, ctypes.byref(value), size, ctypes.byref(done)) or done.value != size:
             raise LayoutError("无法读取桌面图标位置。")
 
-    def read(self):
+    def read(self, legacy=False):
+        identities = None
+        if not legacy:
+            try:
+                identities = desktop_identities()
+            except (ShellError, OSError) as error:
+                raise LayoutError("无法识别桌面图标，请重试或重启 Windows 资源管理器。") from error
         icons = {}
-        for index in range(self._send(0x1004)):
+        count = self._send(0x1004)
+        if identities is not None and len(identities) != count:
+            raise LayoutError("桌面图标正在变化，请稍后重试。")
+        for index in range(count):
             item = LVITEM()
             item.iItem = index
             item.pszText = self.memory + 512
@@ -149,15 +159,20 @@ class DesktopIcons:
             if not self._send(0x1010, index, self.memory):
                 raise LayoutError("无法读取桌面图标位置。")
             self._read(self.memory, point)
-            if not name.value or name.value in icons:
-                raise LayoutError("桌面存在同名图标或无法读取名称，无法可靠保存或恢复布局。")
-            icons[name.value] = [point.x, point.y]
+            if not name.value:
+                raise LayoutError("无法读取桌面图标名称，请稍后重试。")
+            key = name.value if legacy else identities[index][0]
+            if identities is not None and identities[index][1] != [point.x, point.y]:
+                raise LayoutError("桌面图标正在变化，请稍后重试。")
+            if key in icons:
+                raise LayoutError("旧布局中存在同名图标，请重新记忆当前布局。")
+            icons[key] = [point.x, point.y]
         return icons
 
-    def restore(self, saved):
+    def restore(self, saved, legacy=False):
         if self.u.GetWindowLongW(self.hwnd, -16) & 0x100:
             raise LayoutError("Windows 已开启“自动排列图标”。请在桌面右键 → 查看中关闭后重试。")
-        current = self.read()
+        current = self.read(legacy=legacy)
         matched = set(current) & set(saved)
         if not matched:
             raise LayoutError("当前桌面没有与已保存布局匹配的图标。")
@@ -166,6 +181,6 @@ class DesktopIcons:
                 point = wintypes.POINT(*saved[name])
                 self._write(self.memory, point)
                 self._send(0x1031, index, self.memory)
-        actual = self.read()
-        failed = sum(actual[name] != saved[name] for name in matched if name in actual)
+        actual = self.read(legacy=legacy)
+        failed = sum(name not in actual or actual[name] != saved[name] for name in matched)
         return len(matched), len(saved) - len(matched), len(current) - len(matched), failed
