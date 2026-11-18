@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import math
 from pathlib import Path
 
-from PySide6.QtCore import QDateTime, QEvent, QPoint, QRect, QSize, QTimer, QUrl, Signal, Qt
+from PySide6.QtCore import QDateTime, QEvent, QPoint, QProcess, QRect, QSize, QTimer, QUrl, Signal, Qt
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -43,7 +43,9 @@ from PySide6.QtWidgets import (
 )
 
 from app.branding import APP_DISPLAY_NAME
+from app.config import RESOURCE_DIR
 from app.desktop_visibility import send_window_to_bottom
+from app.desktop_layout import LayoutError, save_layout, restore_layout
 from app.reminder_preferences import (
     AUDIO_EXTENSIONS,
     DesktopToolSettings,
@@ -98,6 +100,7 @@ class ReminderLauncher(QWidget):
         ("倒计时", "countdown"),
         ("计算器", "calculator"),
         ("汇率", "currency"),
+        ("布局", "layout"),
         ("睡眠", "sleep"),
     )
 
@@ -140,9 +143,17 @@ class ReminderLauncher(QWidget):
         self.buttons: dict[str, QPushButton] = {}
         for label, kind in self._ACTIONS:
             button = QPushButton(label)
-            button.clicked.connect(
-                lambda _checked=False, selected=kind: self._choose(selected)
-            )
+            if kind == "layout":
+                menu = QMenu(button)
+                for title, action in (("记忆当前电脑布局", "save_layout"),
+                                      ("恢复桌面布局", "restore_layout"),
+                                      ("TV铺满两屏", "tv_span")):
+                    menu.addAction(title, lambda _checked=False, selected=action: self._choose(selected))
+                button.setMenu(menu)
+            else:
+                button.clicked.connect(
+                    lambda _checked=False, selected=kind: self._choose(selected)
+                )
             layout.addWidget(button)
             self.buttons[kind] = button
         self.exit_button = QPushButton("退出")
@@ -1355,6 +1366,7 @@ class DesktopReminderManager:
         self._widgets: dict[str, DesktopReminderWidget] = {}
         self._translator: TranslatorWindow | None = None
         self._currency: CurrencyWindow | None = None
+        self._tv_process: QProcess | None = None
         self._launcher = ReminderLauncher()
         self._launcher.action_requested.connect(self._create_action)
         self._launcher.display_mode_toggle_requested.connect(
@@ -1418,6 +1430,23 @@ class DesktopReminderManager:
         self.open_launcher()
 
     def _create_action(self, kind: str) -> None:
+        if kind == "tv_span":
+            self._span_tradingview()
+            return
+        if kind in {"save_layout", "restore_layout"}:
+            try:
+                if kind == "save_layout":
+                    count = save_layout()
+                    message = f"已保存 {count} 个桌面图标的位置。"
+                else:
+                    count, missing, added, failed = restore_layout()
+                    message = f"已尝试恢复 {count} 个图标；保存后消失 {missing} 个，新增 {added} 个。"
+                    if failed:
+                        message += f"\n其中 {failed} 个位置未能准确恢复，请检查屏幕布局、分辨率和桌面图标对齐设置。"
+                QMessageBox.information(self._parent, APP_DISPLAY_NAME, message)
+            except (LayoutError, OSError) as error:
+                QMessageBox.warning(self._parent, APP_DISPLAY_NAME, str(error))
+            return
         if kind == "translate":
             self.open_translator()
             return
@@ -1470,6 +1499,32 @@ class DesktopReminderManager:
         self._reminders[reminder.reminder_id] = reminder
         self._persist()
         self._show_widget(reminder)
+
+    def _span_tradingview(self) -> None:
+        if self._tv_process is not None:
+            return
+        script = RESOURCE_DIR / "tv_span.ps1"
+        if not script.is_file():
+            QMessageBox.warning(self._parent, APP_DISPLAY_NAME, "铺屏组件不存在，请重新安装软件。")
+            return
+        process = QProcess(self._launcher)
+        self._tv_process = process
+
+        def finished(code, status):
+            if code != 0 or status != QProcess.ExitStatus.NormalExit:
+                QMessageBox.warning(self._parent, APP_DISPLAY_NAME, "无法铺满屏幕，请确认 TradingView 已运行且窗口没有最小化。")
+            self._tv_process = None
+            process.deleteLater()
+
+        def error_occurred(error):
+            if error == QProcess.ProcessError.FailedToStart:
+                QMessageBox.warning(self._parent, APP_DISPLAY_NAME, "无法启动 Windows PowerShell。")
+                self._tv_process = None
+                process.deleteLater()
+
+        process.finished.connect(finished)
+        process.errorOccurred.connect(error_occurred)
+        process.start("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script)])
 
     def _edit(self, reminder_id: str) -> None:
         reminder = self._reminders.get(reminder_id)

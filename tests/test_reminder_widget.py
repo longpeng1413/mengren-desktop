@@ -112,6 +112,7 @@ def test_desktop_launcher_matches_f1_button_size_and_uses_larger_font() -> None:
         "countdown",
         "calculator",
         "currency",
+        "layout",
         "sleep",
     }
     assert [button.text() for button in launcher.buttons.values()] == [
@@ -124,9 +125,19 @@ def test_desktop_launcher_matches_f1_button_size_and_uses_larger_font() -> None:
         "倒计时",
         "计算器",
         "汇率",
+        "布局",
         "睡眠",
     ]
     assert launcher.drag_handle.text() == "移动"
+    assert [action.text() for action in launcher.buttons["layout"].menu().actions()] == [
+        "记忆当前电脑布局", "恢复桌面布局", "TV铺满两屏"
+    ]
+    selected = QSignalSpy(launcher.action_requested)
+    for action in launcher.buttons["layout"].menu().actions():
+        action.trigger()
+    assert [selected.at(index)[0] for index in range(selected.count())] == [
+        "save_layout", "restore_layout", "tv_span"
+    ]
     assert launcher.display_mode_button.text() == "桌面"
     assert launcher.exit_button.text() == "退出"
     assert "min-width: 48px" in launcher.styleSheet()
