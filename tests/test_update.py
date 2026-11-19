@@ -72,7 +72,19 @@ def _zip_bytes(version: str, extra: str | None = None) -> bytes:
 
 @pytest.mark.parametrize(
     ("remote", "local", "newer"),
-    [("18.31", "18.30", True), ("v18.100", "18.99", True), ("19", "18.30", True), ("18.30", "18.30", False), ("18.2", "18.30", False)],
+    [
+        ("18.31", "18.30", True),
+        ("v18.100", "18.99", True),
+        ("19", "18.30", True),
+        ("18.30", "18.30", False),
+        ("18.2", "18.30", False),
+        ("v1.0.0", "18.40", True),
+        ("18.40", "v1.0.0", False),
+        ("1.0.1", "1.0.0", True),
+        ("v1.0.0", "1.0.0", False),
+        ("v1.9.10", "v1.9.9", True),
+        ("unreadable 2.0.0", "1.0.0", False),
+    ],
 )
 def test_versions_compare_as_numbers(remote, local, newer) -> None:
     assert update.is_newer(remote, local) is newer

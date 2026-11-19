@@ -57,29 +57,62 @@ if ($running.Count -gt 0) {
     throw "Close the running test build first: $($running[0].Path)"
 }
 
-& $python -m PyInstaller `
-    --noconfirm `
-    --clean `
-    --windowed `
-    --onedir `
-    --distpath $stagingRoot `
-    --workpath (Join-Path $buildRoot "pyinstaller-work") `
-    --specpath $buildRoot `
-    --name $bundleName `
-    --icon $icon `
-    --add-data $resourceData `
-    --collect-data rapidocr `
-    --collect-submodules rapidocr `
-    --hidden-import mss `
-    --exclude-module PIL._avif `
-    --exclude-module PIL.AvifImagePlugin `
-    $entryPoint
-
+$claudeSource = Join-Path $projectRoot "native\claude_environment"
+$claudeExe = Join-Path $buildRoot "ClaudeEnvironmentSwitch.exe"
+$csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
+& $csc /nologo /target:winexe /platform:anycpu /optimize+ /codepage:65001 `
+    /r:System.Windows.Forms.dll /r:System.Management.dll /r:System.Web.Extensions.dll `
+    "/out:$claudeExe" `
+    (Join-Path $claudeSource "EnvironmentSwitch.cs") `
+    (Join-Path $claudeSource "EdgeLanguageSwitch.cs")
 if ($LASTEXITCODE -ne 0) {
-    throw "Release build failed."
+    throw "Claude environment switch build failed."
+}
+$claudeData = $claudeExe + ";resources"
+
+# Keep third-party PATH entries out of PyInstaller's binary dependency resolution.
+# Qt expects the Windows ICU ABI; tools such as Poppler ship an incompatible
+# icuuc.dll with the same filename.
+$python = (Get-Command -Name $python -CommandType Application).Source
+$previousPath = $env:Path
+try {
+    $env:Path = @(
+        (Split-Path -Parent $python),
+        [Environment]::SystemDirectory,
+        $env:WINDIR
+    ) -join ";"
+    & $python -m PyInstaller `
+        --noconfirm `
+        --clean `
+        --windowed `
+        --onedir `
+        --distpath $stagingRoot `
+        --workpath (Join-Path $buildRoot "pyinstaller-work") `
+        --specpath $buildRoot `
+        --name $bundleName `
+        --icon $icon `
+        --add-data $resourceData `
+        --add-data $claudeData `
+        --collect-data rapidocr `
+        --collect-submodules rapidocr `
+        --hidden-import mss `
+        --exclude-module PIL._avif `
+        --exclude-module PIL.AvifImagePlugin `
+        $entryPoint
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Release build failed."
+    }
+} finally {
+    $env:Path = $previousPath
 }
 
 $bundleRoot = Join-Path $stagingRoot $bundleName
+$appLocalIcu = Get-ChildItem -LiteralPath (Join-Path $bundleRoot "_internal") -Recurse -Filter "icuuc.dll" -File
+if ($appLocalIcu) {
+    throw "The release contains an app-local icuuc.dll. Qt must use the Windows ICU."
+}
 Rename-Item `
     -LiteralPath (Join-Path $bundleRoot "$bundleName.exe") `
     -NewName "$displayName.exe"

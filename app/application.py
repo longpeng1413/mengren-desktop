@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 import sys
 
 from PySide6.QtCore import QTimer, Qt
@@ -57,6 +58,7 @@ def _repair_startup_settings(settings: HotkeySettings) -> HotkeySettings:
 
 
 SMOKE_TEST_VARIABLE = "MENGREN_SMOKE_TEST"
+SMOKE_READY_VARIABLE = "MENGREN_SMOKE_READY_FILE"
 
 
 def run() -> None:
@@ -301,4 +303,7 @@ def run() -> None:
             settings,
             registered,
         )
+    if smoke_test and (ready_file := os.environ.get(SMOKE_READY_VARIABLE)):
+        # Only the Qt event loop can acknowledge a fully initialized application.
+        QTimer.singleShot(0, lambda: Path(ready_file).write_text(APP_VERSION, encoding="ascii"))
     sys.exit(app.exec())

@@ -59,7 +59,11 @@ from app.reminder_preferences import (
     save_desktop_tool_settings,
     save_reminders,
 )
-from app.system_actions import open_calculator, put_computer_to_sleep
+from app.system_actions import (
+    open_calculator,
+    open_claude_environment,
+    put_computer_to_sleep,
+)
 from ui import theme
 from ui.color_picker import pick_color
 from ui.currency_window import CurrencyWindow
@@ -145,9 +149,13 @@ class ReminderLauncher(QWidget):
             button = QPushButton(label)
             if kind == "layout":
                 menu = QMenu(button)
-                for title, action in (("记忆当前电脑布局", "save_layout"),
-                                      ("恢复桌面布局", "restore_layout"),
-                                      ("TV铺满两屏", "tv_span")):
+                for title, action in (
+                    ("记忆当前电脑布局", "save_layout"),
+                    ("恢复桌面布局", "restore_layout"),
+                    ("TV铺满两屏", "tv_span"),
+                    ("应用 Claude 环境", "claude_apply"),
+                    ("恢复日常环境", "claude_restore"),
+                ):
                     menu.addAction(title, lambda _checked=False, selected=action: self._choose(selected))
                 button.setMenu(menu)
             else:
@@ -1430,6 +1438,10 @@ class DesktopReminderManager:
         self.open_launcher()
 
     def _create_action(self, kind: str) -> None:
+        if kind in {"claude_apply", "claude_restore"}:
+            if not open_claude_environment(restore=kind == "claude_restore"):
+                QMessageBox.warning(self._parent, APP_DISPLAY_NAME, "无法启动内置的 Claude 环境切换，请检查软件文件是否完整。")
+            return
         if kind == "tv_span":
             self._span_tradingview()
             return

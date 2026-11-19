@@ -7,6 +7,8 @@ import ctypes
 import subprocess
 import sys
 
+from app.config import RESOURCE_DIR, ROOT_DIR
+
 
 _CALCULATOR_IMAGE_NAMES = {
     "calculator.exe",
@@ -22,6 +24,26 @@ def open_calculator() -> bool:
     try:
         subprocess.Popen(
             ["calc.exe"],
+            close_fds=True,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+        return True
+    except OSError:
+        return False
+
+
+def open_claude_environment(*, restore: bool) -> bool:
+    """Start the app's bundled Windows environment-switch action."""
+    if sys.platform != "win32":
+        return False
+    directory = RESOURCE_DIR if getattr(sys, "frozen", False) else ROOT_DIR / "build"
+    helper = directory / "ClaudeEnvironmentSwitch.exe"
+    if not helper.is_file():
+        return False
+    try:
+        subprocess.Popen(
+            [str(helper), "--restore" if restore else "--apply"],
+            cwd=helper.parent,
             close_fds=True,
             creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         )

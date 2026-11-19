@@ -129,14 +129,16 @@ def test_desktop_launcher_matches_f1_button_size_and_uses_larger_font() -> None:
         "睡眠",
     ]
     assert launcher.drag_handle.text() == "移动"
-    assert [action.text() for action in launcher.buttons["layout"].menu().actions()] == [
-        "记忆当前电脑布局", "恢复桌面布局", "TV铺满两屏"
+    actions = launcher.buttons["layout"].menu().actions()
+    assert all(action.isVisible() for action in actions)
+    assert [action.text() for action in actions] == [
+        "记忆当前电脑布局", "恢复桌面布局", "TV铺满两屏", "应用 Claude 环境", "恢复日常环境"
     ]
     selected = QSignalSpy(launcher.action_requested)
-    for action in launcher.buttons["layout"].menu().actions():
+    for action in actions:
         action.trigger()
     assert [selected.at(index)[0] for index in range(selected.count())] == [
-        "save_layout", "restore_layout", "tv_span"
+        "save_layout", "restore_layout", "tv_span", "claude_apply", "claude_restore"
     ]
     assert launcher.display_mode_button.text() == "桌面"
     assert launcher.exit_button.text() == "退出"
@@ -144,6 +146,27 @@ def test_desktop_launcher_matches_f1_button_size_and_uses_larger_font() -> None:
     assert "min-height: 32px" in launcher.styleSheet()
     assert "font-size: 13px" in launcher.styleSheet()
     launcher.close()
+
+
+def test_layout_runs_both_bundled_claude_actions(monkeypatch) -> None:
+    _application = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(reminder_widget, "load_reminders", lambda: [])
+    calls = []
+    monkeypatch.setattr(
+        reminder_widget, "open_claude_environment", lambda *, restore: not calls.append(restore)
+    )
+    manager = DesktopReminderManager()
+    try:
+        menu = manager.launcher.buttons["layout"].menu()
+        apply, restore = menu.actions()[-2:]
+        assert apply.text() == "应用 Claude 环境"
+        assert restore.text() == "恢复日常环境"
+        assert apply.isVisible() and restore.isVisible()
+        apply.trigger()
+        restore.trigger()
+        assert calls == [False, True]
+    finally:
+        manager.shutdown()
 
 
 def test_desktop_launcher_display_mode_label_tracks_current_mode() -> None:

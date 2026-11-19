@@ -73,9 +73,12 @@ def current_version() -> str:
 
 
 def version_key(version: str) -> tuple[int, ...]:
-    """``"v18.31"`` -> ``(18, 31)``; anything unreadable sorts lowest."""
-    numbers = re.findall(r"\d+", version)
-    return tuple(int(number) for number in numbers) if numbers else (0,)
+    """Order old releases before the three-component series beginning at 1.0.0."""
+    match = re.fullmatch(r"v?(\d+(?:\.\d+){0,2})", version.strip(), flags=re.IGNORECASE)
+    if not match:
+        return (-1,)
+    parts = tuple(int(number) for number in match.group(1).split("."))
+    return (int(len(parts) == 3), *parts)
 
 
 def is_newer(remote: str, local: str | None = None) -> bool:

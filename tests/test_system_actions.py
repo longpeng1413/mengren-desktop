@@ -20,6 +20,26 @@ def test_open_calculator_starts_windows_calculator(monkeypatch) -> None:
     assert calls[0][0] == ["calc.exe"]
 
 
+def test_claude_actions_use_the_bundled_executable(monkeypatch, tmp_path) -> None:
+    resources = tmp_path / "_internal" / "resources"
+    resources.mkdir(parents=True)
+    helper = resources / "ClaudeEnvironmentSwitch.exe"
+    helper.touch()
+    monkeypatch.setattr(system_actions.sys, "platform", "win32")
+    monkeypatch.setattr(system_actions.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(system_actions, "RESOURCE_DIR", resources)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    calls = []
+    monkeypatch.setattr(
+        system_actions.subprocess, "Popen", lambda command, **options: calls.append((command, options))
+    )
+
+    assert system_actions.open_claude_environment(restore=False)
+    assert system_actions.open_claude_environment(restore=True)
+    assert [command for command, _ in calls] == [[str(helper), "--apply"], [str(helper), "--restore"]]
+    assert all(options["cwd"] == resources for _, options in calls)
+
+
 def test_toggle_calculator_opens_when_not_running(monkeypatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(system_actions.sys, "platform", "win32")
