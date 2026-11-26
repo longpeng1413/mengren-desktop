@@ -7,8 +7,9 @@ import json
 from pathlib import Path
 import wave
 
-from PySide6.QtCore import QTime, Qt
+from PySide6.QtCore import QAbstractAnimation, QTime, Qt
 from PySide6.QtGui import QContextMenuEvent
+from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QAbstractButton, QApplication, QDialog, QFrame, QLabel, QMenu, QMessageBox, QPushButton, QToolTip, QWidget
 
@@ -149,6 +150,7 @@ def test_save_as_default_prefills_future_alarms_without_changing_the_current_ala
         editor._choose.click()
         editor._duration.setCurrentText("30m")
         editor._snooze.setCurrentText("1h")
+        editor._fade_in.setChecked(True)
         editor._delete_after.setChecked(True)
         editor.findChild(QPushButton, "saveAlarmDefault").click()
         assert editor.result_alarm == original
@@ -179,6 +181,7 @@ def test_save_as_default_prefills_future_alarms_without_changing_the_current_ala
         assert editor._file_label.text() == "铃声.wav"
         assert Path(draft.sound_path).is_file()
         assert (editor._duration.currentData(), editor._snooze.currentData()) == (1800, 60)
+        assert editor._fade_in.isChecked()
         assert editor._delete_after.isChecked()
         editor._save()
         return editor.result()
@@ -187,6 +190,7 @@ def test_save_as_default_prefills_future_alarms_without_changing_the_current_ala
     reopened._window.findChild(QPushButton, "alarmAdd").click()
     old, added = load_clock_alarms()
     assert old == original and added.label == "晨练"
+    assert added.fade_in
     assert added.next_at == datetime(2026, 11, 23, 7, 24)
     reopened.shutdown()
 
@@ -375,21 +379,52 @@ def test_generated_clock_tone_is_stronger_than_the_reminder_tone() -> None:
     assert 1.8 * peak(reminder) < peak(clock) < 32767
 
 
+def test_alarm_fade_waits_for_playback_and_resets_on_stop(monkeypatch) -> None:
+    _app = QApplication.instance() or QApplication([])
+    parent = QWidget()
+    playback = AlarmPlayback(parent)
+    monkeypatch.setattr(playback._player, "setSource", lambda _source: None)
+    monkeypatch.setattr(playback._player, "play", lambda: None)
+
+    playback.play("gentle", "", 8000)
+    assert 0.11 < playback._output.volume() < 0.13
+    assert playback._fade.state() == QAbstractAnimation.State.Stopped
+    playback._player.playbackStateChanged.emit(QMediaPlayer.PlaybackState.PlayingState)
+    assert playback._fade.state() == QAbstractAnimation.State.Running
+    playback._fade.setCurrentTime(4000)
+    assert 0.55 < playback._output.volume() < 0.57
+    playback._fade.setCurrentTime(8000)
+    assert playback._output.volume() == 1.0
+
+    playback.play("gentle", "", 8000)
+    playback._player.playbackStateChanged.emit(QMediaPlayer.PlaybackState.PlayingState)
+    playback._fade.setCurrentTime(4000)
+    playback.stop()
+    assert playback._fade.state() == QAbstractAnimation.State.Stopped
+    assert playback._output.volume() == 1.0
+    playback.play("gentle", "")
+    playback._player.playbackStateChanged.emit(QMediaPlayer.PlaybackState.PlayingState)
+    assert playback._fade.state() == QAbstractAnimation.State.Stopped
+    assert playback._output.volume() == 1.0
+    playback.stop()
+    parent.deleteLater()
+
+
 def test_snooze_survives_restart_then_stops_and_deletes(monkeypatch) -> None:
     _app = QApplication.instance() or QApplication([])
     current = MONDAY
     alarm = ClockAlarm(
-        "test", time(7), delete_after_ring=True, ring_seconds=10, snooze_minutes=2,
+        "test", time(7), delete_after_ring=True, ring_seconds=10, snooze_minutes=2, fade_in=True,
     ).set_enabled(True, current - timedelta(minutes=1))
     save_clock_alarms([alarm])
     playback = []
-    monkeypatch.setattr(AlarmPlayback, "play", lambda _self, sound, _path: playback.append(sound))
+    monkeypatch.setattr(AlarmPlayback, "play", lambda _self, sound, _path, fade: playback.append((sound, fade)))
     manager = ClockAlarmManager(now=lambda: current)
     manager.start()
 
     assert manager._alert.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     assert manager._ring_timeout.interval() == 10000
-    assert playback == ["default"]
+    assert playback == [("default", 5000)]
     manager._alert.snooze_button.click()
     assert not manager._alert.isVisible()
     assert load_clock_alarms() == [alarm.snooze(current)]
@@ -405,7 +440,7 @@ def test_snooze_survives_restart_then_stops_and_deletes(monkeypatch) -> None:
     manager._ring_timeout.timeout.emit()
     assert not load_clock_alarms()
     assert not manager._alert.isVisible()
-    assert playback == ["default", "default"]
+    assert playback == [("default", 5000), ("default", 5000)]
     manager.shutdown()
 
 
@@ -472,5 +507,5 @@ def test_f3_separates_existing_dated_reminders_from_clock_alarms(monkeypatch) ->
 
     monkeypatch.setattr("ui.reminder_widget.ReminderEditorDialog.exec", record_editor)
     manager.launcher.buttons["schedule"].click()
-    assert edited == [("日程提醒", "alarm")]
+    assert edited == [("日程", "alarm")]
     manager.shutdown()

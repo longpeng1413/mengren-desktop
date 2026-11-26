@@ -61,7 +61,7 @@ def restore_layout():
             if not isinstance(name, str) or not isinstance(point, list) or len(point) != 2 or any(type(v) is not int or abs(v) > 100000 for v in point):
                 raise ValueError()
     except FileNotFoundError:
-        raise LayoutError("还没有保存图标布局，请先选择“记忆当前电脑布局”。") from None
+        raise LayoutError("还没有保存图标布局，请先选择“记忆当前桌面”。") from None
     except (OSError, ValueError, KeyError, TypeError):
         raise LayoutError("保存的图标布局无法读取，请重新保存。") from None
     with DesktopIcons() as desktop:
@@ -165,7 +165,7 @@ class DesktopIcons:
             if identities is not None and identities[index][1] != [point.x, point.y]:
                 raise LayoutError("桌面图标正在变化，请稍后重试。")
             if key in icons:
-                raise LayoutError("旧布局中存在同名图标，请重新记忆当前布局。")
+                raise LayoutError("旧布局中存在同名图标，请重新选择“记忆当前桌面”。")
             icons[key] = [point.x, point.y]
         return icons
 

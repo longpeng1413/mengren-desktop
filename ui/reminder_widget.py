@@ -101,7 +101,7 @@ class ReminderLauncher(QWidget):
         ("贴图片", "image"),
         ("翻译", "translate"),
         ("闹钟", "alarm"),
-        ("日程提醒", "schedule"),
+        ("日程", "schedule"),
         ("计时器", "stopwatch"),
         ("倒计时", "countdown"),
         ("计算器", "calculator"),
@@ -152,7 +152,7 @@ class ReminderLauncher(QWidget):
             if kind == "layout":
                 menu = QMenu(button)
                 for title, action in (
-                    ("记忆当前电脑布局", "save_layout"),
+                    ("记忆当前桌面", "save_layout"),
                     ("恢复桌面布局", "restore_layout"),
                     ("TV铺满两屏", "tv_span"),
                     ("应用 Claude 环境", "claude_apply"),
@@ -285,7 +285,7 @@ class ReminderAlertDialog(QDialog):
         layout.addWidget(stop_button, 0, Qt.AlignmentFlag.AlignCenter)
 
     def show_reminder(self, reminder: ReminderSettings) -> None:
-        titles = {"alarm": "⏰ 日程提醒", "countdown": "⏰ 倒计时结束"}
+        titles = {"alarm": "⏰ 日程", "countdown": "⏰ 倒计时结束"}
         self._title_label.setText(titles.get(reminder.kind, "⏰ 提醒时间到"))
         self._message_label.setText(reminder.text.strip() or "设定的提醒时间已经到了。")
         self.adjustSize()
@@ -606,7 +606,7 @@ class ReminderEditorDialog(QDialog):
         titles = {
             "text": "文字贴图",
             "image": "图片贴图",
-            "alarm": "日程提醒",
+            "alarm": "日程",
             "countdown": "倒计时",
         }
         self.setWindowTitle(titles.get(settings.kind, "桌面工具"))
@@ -885,7 +885,7 @@ class ReminderEditorDialog(QDialog):
             and bool(self._original.target_at)
         )
         if mode == "alarm" and alarm_at <= datetime.now() and not unchanged_alarm:
-            QMessageBox.warning(self, APP_DISPLAY_NAME, "日程提醒时间必须晚于当前时间。")
+            QMessageBox.warning(self, APP_DISPLAY_NAME, "日程时间必须晚于当前时间。")
             return
         try:
             image_path = (
@@ -1122,7 +1122,7 @@ class DesktopReminderWidget(QWidget):
             self._image_item.show()
         if settings.kind in {"alarm", "countdown", "stopwatch"}:
             default_titles = {
-                "alarm": "日程提醒",
+                "alarm": "日程",
                 "countdown": "倒计时",
                 "stopwatch": "计时器",
             }
@@ -1221,7 +1221,7 @@ class DesktopReminderWidget(QWidget):
         if mode == "countdown":
             text = f"倒计时：{_format_remaining(remaining)}"
         else:
-            text = f"日程提醒：{target.strftime('%Y-%m-%d %H:%M:%S')}"
+            text = f"日程：{target.strftime('%Y-%m-%d %H:%M:%S')}"
         self._timer_label.setText(text)
         self._timer_label.setStyleSheet(
             "color: #8fd6ff; font-size: 18px; font-weight: 700;"

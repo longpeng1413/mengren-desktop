@@ -12,9 +12,9 @@ from ui.main_window import MainWindow
 
 
 def test_release_uses_current_version_metadata() -> None:
-    assert APP_VERSION == "1.2.2"
-    assert APP_DISPLAY_NAME == "猛人桌面助手v1.2.2"
-    assert is_newer(APP_VERSION, "1.2.1")
+    assert APP_VERSION == "1.2.3"
+    assert APP_DISPLAY_NAME == "猛人桌面助手v1.2.3"
+    assert is_newer(APP_VERSION, "1.2.2")
     assert is_newer(APP_VERSION, "18.40")
 
 

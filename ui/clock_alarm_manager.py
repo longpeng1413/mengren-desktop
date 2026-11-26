@@ -18,7 +18,7 @@ from app.clock_alarms import (
     new_clock_alarm,
     save_clock_alarms,
 )
-from ui.clock_alarm_window import AlarmPlayback, ClockAlarmAlert, ClockAlarmEditor, ClockAlarmWindow
+from ui.clock_alarm_window import ALARM_FADE_IN_MS, AlarmPlayback, ClockAlarmAlert, ClockAlarmEditor, ClockAlarmWindow
 
 
 _logger = logging.getLogger(__name__)
@@ -159,8 +159,10 @@ class ClockAlarmManager(QObject):
             self._audio = AlarmPlayback(self._alert)
         self._ringing = alarm
         self._alert.ring(alarm, now)
-        self._audio.play(alarm.sound, alarm.sound_path)
-        self._ring_timeout.start(alarm.ring_seconds * 1000)
+        ring_ms = alarm.ring_seconds * 1000
+        fade_ms = min(ALARM_FADE_IN_MS, ring_ms // 2) if alarm.fade_in else 0
+        self._audio.play(alarm.sound, alarm.sound_path, fade_ms)
+        self._ring_timeout.start(ring_ms)
         self._refresh_list()
 
     def _finish_ring(self) -> None:

@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, QTime, QTimer, QUrl, Signal, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, QTime, QTimer, QUrl, QVariantAnimation, Signal, Qt
 from PySide6.QtGui import QColor, QCursor, QPainter, QPen
 from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -51,6 +51,11 @@ from app.reminder_preferences import (
     import_reminder_asset,
 )
 from ui import theme
+
+
+ALARM_FADE_IN_MS = 8000
+_FADE_START_VOLUME = 0.12
+_PREVIEW_DURATION_MS = 4000
 
 
 _STYLE = f"""
@@ -315,6 +320,7 @@ class ClockAlarmWindow(QDialog):
             "闹钟使用说明",
             "点「＋」添加闹钟，点击时间或名称进行编辑。右侧开关可以启停，右键菜单可删除该条闹钟。\n\n"
             "编辑时可设置重复、响铃时长和稍后提醒，也可选择和试听铃声。"
+            "开启「铃声渐响」后，声音会由轻到响。"
             "点「保存为默认」可将除时间以外的设置用于以后新建的闹钟。"
             f"默认铃声为《{DEFAULT_RINGTONE_TITLE}》。"
             "试听和响铃都使用 Windows 当前的声音输出和音量。\n\n"
@@ -404,13 +410,19 @@ class AlarmPlayback:
         self._devices.audioOutputsChanged.connect(self._sync_default_output)
         self._player.setAudioOutput(self._output)
         self._player.setLoops(QMediaPlayer.Loops.Infinite)
+        self._fade = QVariantAnimation(parent)
+        self._fade.setStartValue(_FADE_START_VOLUME)
+        self._fade.setEndValue(1.0)
+        self._fade.valueChanged.connect(self._output.setVolume)
+        self._fade_pending = False
+        self._player.playbackStateChanged.connect(self._start_fade)
         self._player.errorOccurred.connect(self._fallback)
         self._beep_timer = QTimer(parent)
         self._beep_timer.setInterval(1200)
         self._beep_timer.timeout.connect(QApplication.beep)
         self._active = False
 
-    def play(self, sound: str, path: str) -> None:
+    def play(self, sound: str, path: str, fade_ms: int = 0) -> None:
         self.stop()
         self._active = True
         self._sync_default_output()
@@ -420,13 +432,25 @@ class AlarmPlayback:
         except OSError:
             self._fallback()
             return
+        if fade_ms > 0:
+            self._fade.setDuration(fade_ms)
+            self._fade_pending = True
+            self._output.setVolume(_FADE_START_VOLUME)
         self._player.setSource(QUrl.fromLocalFile(path))
         self._player.play()
 
     def stop(self) -> None:
         self._active = False
+        self._fade_pending = False
+        self._fade.stop()
         self._player.stop()
         self._beep_timer.stop()
+        self._output.setVolume(1.0)
+
+    def _start_fade(self, state: QMediaPlayer.PlaybackState) -> None:
+        if self._fade_pending and state == QMediaPlayer.PlaybackState.PlayingState:
+            self._fade_pending = False
+            self._fade.start()
 
     def _sync_default_output(self) -> None:
         if self._active:
@@ -549,6 +573,10 @@ class ClockAlarmEditor(QDialog):
         old_snooze = f"{alarm.snooze_minutes} 分钟" if alarm.snooze_minutes else "关闭"
         self._snooze = _duration_combo(SNOOZE_DURATIONS, alarm.snooze_minutes, old_snooze)
         form.addRow("稍后提醒", self._snooze)
+        self._fade_in = QCheckBox("铃声渐响")
+        self._fade_in.setToolTip("响铃从较低音量开始，逐渐升至平时的音量")
+        self._fade_in.setChecked(alarm.fade_in)
+        form.addRow("", self._fade_in)
         self._delete_after = QCheckBox("本轮停止响铃后自动删除")
         self._delete_after.setChecked(alarm.delete_after_ring)
         form.addRow("", self._delete_after)
@@ -587,9 +615,10 @@ class ClockAlarmEditor(QDialog):
         if self._preview_timer.isActive():
             self._stop_preview()
             return
-        self._preview.play(self._sound.currentData(), self._sound_path)
+        fade_ms = _PREVIEW_DURATION_MS // 2 if self._fade_in.isChecked() else 0
+        self._preview.play(self._sound.currentData(), self._sound_path, fade_ms)
         self._preview_button.setText("停止试听")
-        self._preview_timer.start(4000)
+        self._preview_timer.start(_PREVIEW_DURATION_MS)
 
     def _stop_preview(self) -> None:
         self._preview_timer.stop()
@@ -622,6 +651,7 @@ class ClockAlarmEditor(QDialog):
             sound=sound,
             sound_path=sound_path,
             sound_name=self._sound_name if sound_path else "",
+            fade_in=self._fade_in.isChecked(),
         )
 
     def _save(self) -> None:

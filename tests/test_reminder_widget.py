@@ -122,7 +122,7 @@ def test_desktop_launcher_matches_f1_button_size_and_uses_larger_font() -> None:
         "贴图片",
         "翻译",
         "闹钟",
-        "日程提醒",
+        "日程",
         "计时器",
         "倒计时",
         "计算器",
@@ -134,7 +134,7 @@ def test_desktop_launcher_matches_f1_button_size_and_uses_larger_font() -> None:
     actions = launcher.buttons["layout"].menu().actions()
     assert all(action.isVisible() for action in actions)
     assert [action.text() for action in actions] == [
-        "记忆当前电脑布局", "恢复桌面布局", "TV铺满两屏", "应用 Claude 环境", "恢复日常环境"
+        "记忆当前桌面", "恢复桌面布局", "TV铺满两屏", "应用 Claude 环境", "恢复日常环境"
     ]
     selected = QSignalSpy(launcher.action_requested)
     for action in actions:

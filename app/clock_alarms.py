@@ -53,6 +53,7 @@ class ClockAlarm:
     sound_name: str = ""
     next_at: datetime | None = None
     snoozed_until: float | None = None
+    fade_in: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -178,6 +179,7 @@ def _alarm_options_from_json(values: dict) -> dict:
         "sound": sound,
         "sound_path": str(values.get("sound_path", "")),
         "sound_name": str(values.get("sound_name", "")),
+        "fade_in": values.get("fade_in") is True,
     }
 
 
