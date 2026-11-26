@@ -1,13 +1,17 @@
 """Regression coverage for the F3 clock alarm list and scheduling."""
 
+from array import array
 from dataclasses import replace
 from datetime import datetime, time, timedelta
 from pathlib import Path
+import wave
 
 from PySide6.QtCore import QTime, Qt
-from PySide6.QtWidgets import QAbstractButton, QApplication, QDialog, QLabel, QPushButton
+from PySide6.QtGui import QContextMenuEvent
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QAbstractButton, QApplication, QDialog, QFrame, QLabel, QMenu, QMessageBox, QPushButton, QWidget
 
-from app.clock_alarms import ClockAlarm, load_clock_alarms, save_clock_alarms
+from app.clock_alarms import ClockAlarm, clock_alarm_sound, load_clock_alarms, save_clock_alarms
 from app.reminder_preferences import (
     ensure_default_alarm_sound,
     new_reminder,
@@ -76,7 +80,14 @@ def test_list_add_edit_toggle_and_delete_save_across_restart(monkeypatch) -> Non
     assert alarm.next_at == datetime(2026, 11, 25, 6, 35)
 
     _app.processEvents()
-    time_label = window.findChild(QLabel, "alarmTime")
+    time_label = window.findChild(QLabel, "listTime")
+    name_label = window.findChild(QLabel, "alarmName")
+    repeat_label = window.findChild(QLabel, "repeatLabel")
+    assert time_label.text() == "06:35"
+    assert name_label.text() == "晨练"
+    assert repeat_label.text() == "· 周一、周三"
+    assert time_label.x() < name_label.x() < repeat_label.x()
+    assert abs(time_label.geometry().center().y() - repeat_label.geometry().center().y()) <= 1
     assert time_label.height() >= time_label.fontMetrics().height()
     switch = next(button for button in window.findChildren(QAbstractButton, "alarmSwitch") if button.isVisible())
     switch.click()
@@ -97,6 +108,45 @@ def test_list_add_edit_toggle_and_delete_save_across_restart(monkeypatch) -> Non
     reopened.shutdown()
 
 
+def test_list_context_menu_deletes_only_its_row_and_help_opens(monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    first = ClockAlarm("first", time(8), label="很长的测试名称" * 7, weekdays=(0, 1, 2, 4, 5, 6))
+    second = ClockAlarm("second", time(9))
+    save_clock_alarms([first, second])
+    manager = ClockAlarmManager(now=lambda: MONDAY)
+    manager.open_list()
+    window = manager._window
+    window.resize(window.minimumWidth(), window.height())
+    app.processEvents()
+    first_row, _ = window.findChildren(QFrame, "alarmRow")
+    assert first_row.findChild(QLabel, "alarmName").text().startswith("很长")
+    assert first_row.findChild(QLabel, "repeatLabel").text().startswith("· 周一")
+
+    second_row_button = next(
+        button for button in window.findChildren(QPushButton, "editRow")
+        if button.property("alarmId") == second.alarm_id
+    )
+    point = second_row_button.rect().center()
+    event = QContextMenuEvent(
+        QContextMenuEvent.Reason.Mouse, point, second_row_button.mapToGlobal(point)
+    )
+    app.sendEvent(second_row_button, event)
+    app.processEvents()
+    menu = window.findChild(QMenu)
+    assert menu.isVisible()
+    action, = menu.actions()
+    assert action.text() == "删除闹钟"
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+    assert load_clock_alarms() == [first]
+
+    help_text = []
+    monkeypatch.setattr(QMessageBox, "information", lambda _parent, _title, text: help_text.append(text))
+    window.findChild(QPushButton, "alarmHelp").click()
+    assert "右键菜单可删除" in help_text[0]
+    assert "Windows 当前的声音输出和音量" in help_text[0]
+    manager.shutdown()
+
+
 def test_editor_imports_audio_and_provides_distinct_builtin_tones(tmp_path, monkeypatch) -> None:
     _app = QApplication.instance() or QApplication([])
     paths = [ensure_default_alarm_sound(tone) for tone in ("gentle", "bright")]
@@ -115,6 +165,71 @@ def test_editor_imports_audio_and_provides_distinct_builtin_tones(tmp_path, monk
     assert editor.result_alarm.sound_name == original.name
     original.unlink()
     assert Path(editor.result_alarm.sound_path).is_file()
+
+
+def test_all_four_embedded_songs_are_selectable_and_resolve_to_local_files() -> None:
+    _app = QApplication.instance() or QApplication([])
+    editor = ClockAlarmEditor(ClockAlarm("songs", time(7)), False)
+    assert editor._sound.currentData() == "default"
+    for key, title, filename in (
+        ("default", "默认 · 我听人说思念像风一样", "missing_like_wind.mp3"),
+        ("road_answer", "答案在路上", "road_answer.mp3"),
+        ("cello_volcano", "岩滩火山（大提琴纯音乐）", "cello_volcano.mp3"),
+        ("your_answer", "你的答案", "your_answer.mp3"),
+    ):
+        index = editor._sound.findData(key)
+        assert index >= 0
+        assert editor._sound.itemText(index) == title
+        path = Path(clock_alarm_sound(key))
+        assert path.name == filename
+        assert path.stat().st_size > 1000
+    editor._sound.setCurrentIndex(editor._sound.findData("your_answer"))
+    editor._save()
+    save_clock_alarms([editor.result_alarm])
+    assert load_clock_alarms()[0].sound == "your_answer"
+    editor.deleteLater()
+
+
+def test_alarm_playback_follows_the_current_windows_output(monkeypatch) -> None:
+    _app = QApplication.instance() or QApplication([])
+    parent = QWidget()
+    playback = AlarmPlayback(parent)
+    first_output = object()
+    headset = object()
+    current_output = first_output
+    routed = []
+    monkeypatch.setattr(playback._devices, "defaultAudioOutput", lambda: current_output)
+    monkeypatch.setattr(playback._output, "setDevice", routed.append)
+    monkeypatch.setattr(playback._player, "setSource", lambda _source: None)
+    monkeypatch.setattr(playback._player, "play", lambda: None)
+
+    playback.play("default", "")
+    assert playback._output.volume() == 1.0
+    assert routed == [first_output]
+    current_output = headset
+    playback._devices.audioOutputsChanged.emit()
+    assert routed == [first_output, headset]
+    playback.stop()
+
+    current_output = first_output
+    playback._devices.audioOutputsChanged.emit()
+    assert routed == [first_output, headset]
+    playback.play("default", "")
+    assert routed == [first_output, headset, first_output]
+    playback.stop()
+    parent.deleteLater()
+
+
+def test_generated_clock_tone_is_stronger_than_the_reminder_tone() -> None:
+    def peak(path: str) -> int:
+        samples = array("h")
+        with wave.open(path, "rb") as sound:
+            samples.frombytes(sound.readframes(sound.getnframes()))
+        return max(abs(sample) for sample in samples)
+
+    reminder = ensure_default_alarm_sound("gentle")
+    clock = ensure_default_alarm_sound("gentle", loud=True)
+    assert 1.8 * peak(reminder) < peak(clock) < 32767
 
 
 def test_snooze_survives_restart_then_stops_and_deletes(monkeypatch) -> None:

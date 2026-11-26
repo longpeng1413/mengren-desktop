@@ -8,7 +8,8 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, time, timedelta
 from uuid import uuid4
 
-from app.reminder_preferences import settings_directory
+from app.config import RESOURCE_DIR
+from app.reminder_preferences import ensure_default_alarm_sound, settings_directory
 
 
 WEEKDAY_NAMES = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
@@ -18,8 +19,14 @@ REPEAT_PRESETS = (
     ("周一至周五", tuple(range(5))),
     ("周六和周日", (5, 6)),
 )
-BUILTIN_SOUNDS = (
-    ("默认提示音", "default"),
+DEFAULT_RINGTONE_TITLE = "我听人说思念像风一样"
+_RINGTONE_TRACKS = {
+    "default": (f"默认 · {DEFAULT_RINGTONE_TITLE}", "missing_like_wind.mp3"),
+    "road_answer": ("答案在路上", "road_answer.mp3"),
+    "cello_volcano": ("岩滩火山（大提琴纯音乐）", "cello_volcano.mp3"),
+    "your_answer": ("你的答案", "your_answer.mp3"),
+}
+BUILTIN_SOUNDS = tuple((name, key) for key, (name, _) in _RINGTONE_TRACKS.items()) + (
     ("轻柔", "gentle"),
     ("清脆", "bright"),
 )
@@ -80,6 +87,15 @@ class ClockAlarm:
             next_at=None,
             snoozed_until=now.timestamp() + self.snooze_minutes * 60,
         )
+
+
+def clock_alarm_sound(sound: str) -> str:
+    track = _RINGTONE_TRACKS.get(sound)
+    if track is not None:
+        bundled = RESOURCE_DIR / "audio" / "clock_alarms" / track[1]
+        if bundled.is_file():
+            return str(bundled)
+    return ensure_default_alarm_sound(sound, loud=True)
 
 
 def new_clock_alarm(now: datetime) -> ClockAlarm:

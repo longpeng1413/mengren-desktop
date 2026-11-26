@@ -52,6 +52,7 @@ class ClockAlarmManager(QObject):
             self._window = ClockAlarmWindow(self._parent)
             self._window.add_requested.connect(self._edit)
             self._window.edit_requested.connect(self._edit)
+            self._window.delete_requested.connect(self._delete)
             self._window.enabled_changed.connect(self._set_enabled)
         self._refresh_list()
         self._window.open_list()
@@ -74,13 +75,17 @@ class ClockAlarmManager(QObject):
         if current is None:
             return
         if delete:
-            self._save_user_change(alarm_id, None)
+            self._delete(alarm_id)
             return
         if (alarm.at, alarm.weekdays) != (current.at, current.weekdays):
             alarm = alarm.set_enabled(current.enabled, self._now())
         else:
             alarm = replace(alarm, next_at=current.next_at, snoozed_until=current.snoozed_until)
         self._save_user_change(alarm_id, alarm)
+
+    def _delete(self, alarm_id: str) -> None:
+        if alarm_id in self._alarms:
+            self._save_user_change(alarm_id, None)
 
     def _set_enabled(self, alarm_id: str, enabled: bool) -> None:
         alarm = self._alarms.get(alarm_id)

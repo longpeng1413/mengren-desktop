@@ -6,9 +6,9 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, QSize, QTime, QTimer, QUrl, Signal, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, QTime, QTimer, QUrl, Signal, Qt
 from PySide6.QtGui import QColor, QCursor, QPainter, QPen
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -32,10 +33,16 @@ from PySide6.QtWidgets import (
 )
 
 from app.branding import APP_DISPLAY_NAME
-from app.clock_alarms import BUILTIN_SOUNDS, REPEAT_PRESETS, WEEKDAY_NAMES, ClockAlarm
+from app.clock_alarms import (
+    BUILTIN_SOUNDS,
+    DEFAULT_RINGTONE_TITLE,
+    REPEAT_PRESETS,
+    WEEKDAY_NAMES,
+    ClockAlarm,
+    clock_alarm_sound,
+)
 from app.reminder_preferences import (
     AUDIO_EXTENSIONS,
-    ensure_default_alarm_sound,
     import_reminder_asset,
 )
 from ui import theme
@@ -49,9 +56,12 @@ QDialog {{
 QLabel, QCheckBox {{ color: {theme.TEXT}; }}
 QLabel#heading {{ font-size: 27px; font-weight: 700; }}
 QLabel#muted {{ color: {theme.MUTED}; }}
-QFrame#alarmRow {{ background: {theme.PANEL}; border-radius: 12px; }}
+QFrame#alarmRow {{ background: {theme.PANEL}; border-radius: 8px; }}
+QLabel#listTime {{ font-size: 19px; font-weight: 700; }}
+QLabel#alarmName, QLabel#repeatLabel {{ font-size: 14px; }}
+QLabel#repeatLabel {{ color: {theme.MUTED}; }}
 QLabel#alarmTime, QTimeEdit#alarmTime {{ font-size: 42px; }}
-QLabel#alarmTime:disabled, QLabel:disabled {{ color: {theme.MUTED}; }}
+QLabel:disabled {{ color: {theme.MUTED}; }}
 QPushButton, QLineEdit, QTimeEdit, QComboBox, QSpinBox {{
     color: {theme.TEXT}; background: {theme.RAISED}; border: 1px solid {theme.LINE};
     border-radius: 8px; padding: 5px 10px; min-height: 26px;
@@ -70,12 +80,13 @@ QPushButton:checked, QPushButton#primaryButton {{
 QPushButton#dangerButton {{ color: {theme.DANGER}; }}
 QPushButton:disabled, QSpinBox:disabled {{ color: {theme.DISABLED}; }}
 QPushButton#alarmAdd {{ font-size: 24px; padding: 0; }}
+QPushButton#alarmHelp {{ font-size: 15px; padding: 0; }}
 QPushButton#editRow {{ background: transparent; border: 1px solid transparent; padding: 0; }}
 QPushButton#editRow:hover {{ border-color: {theme.LINE}; }}
 QPushButton#editRow:focus {{ border-color: {theme.ACCENT}; }}
 QTimeEdit::up-button, QTimeEdit::down-button {{ width: 28px; }}
 QTimeEdit::up-arrow, QTimeEdit::down-arrow {{ width: 14px; height: 9px; }}
-"""
+""" + theme.MENU_STYLE
 
 
 def _button(text: str, role: str = "") -> QPushButton:
@@ -104,7 +115,7 @@ class _AlarmSwitch(QAbstractButton):
         self.setFixedSize(self.sizeHint())
 
     def sizeHint(self) -> QSize:
-        return QSize(52, 32)
+        return QSize(44, 28)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -112,26 +123,49 @@ class _AlarmSwitch(QAbstractButton):
         on = self.isChecked()
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(theme.ACCENT if on else theme.PRESSED))
-        painter.drawRoundedRect(QRectF(2, 3, 48, 26), 13, 13)
+        painter.drawRoundedRect(QRectF(2, 3, 40, 22), 11, 11)
         painter.setBrush(QColor(theme.ACCENT_INK if on else theme.TEXT))
-        painter.drawEllipse(QPointF(37 if on else 15, 16), 9, 9)
+        painter.drawEllipse(QPointF(31 if on else 13, 14), 8, 8)
         if self.hasFocus():
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QPen(QColor(theme.ACCENT)))
-            painter.drawRoundedRect(QRectF(0.5, 1.5, 51, 29), 14, 14)
+            painter.drawRoundedRect(QRectF(0.5, 1.5, 43, 25), 12, 12)
         painter.end()
+
+
+class _AlarmText(QLabel):
+    """Keep room for both fields when an alarm has a long name or repeat summary."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self._name = name
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setText(name)
+
+    def sizeHint(self) -> QSize:
+        metrics = self.fontMetrics()
+        return QSize(metrics.horizontalAdvance(self._name), metrics.height())
+
+    def minimumSizeHint(self) -> QSize:
+        hint = self.sizeHint()
+        return QSize(min(60, hint.width()), hint.height())
+
+    def resizeEvent(self, event) -> None:
+        self.setText(self.fontMetrics().elidedText(self._name, Qt.TextElideMode.ElideRight, self.width()))
+        super().resizeEvent(event)
 
 
 class ClockAlarmWindow(QDialog):
     add_requested = Signal()
     edit_requested = Signal(str)
+    delete_requested = Signal(str)
     enabled_changed = Signal(str, bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self.setWindowTitle("闹钟")
         self.setMinimumSize(390, 365)
-        self.resize(458, 548)
+        self.resize(458, 432)
         self.setStyleSheet(_STYLE)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 20, 22, 18)
@@ -142,6 +176,12 @@ class ClockAlarmWindow(QDialog):
         heading.setObjectName("heading")
         header.addWidget(heading)
         header.addStretch()
+        help_button = _button("?", "alarmHelp")
+        help_button.setFixedSize(28, 28)
+        help_button.setAccessibleName("闹钟使用说明")
+        help_button.setToolTip("闹钟使用说明")
+        help_button.clicked.connect(self._show_help)
+        header.addWidget(help_button)
         add = _button("+", "alarmAdd")
         add.setFixedSize(42, 42)
         add.setAccessibleName("添加闹钟")
@@ -158,7 +198,7 @@ class ClockAlarmWindow(QDialog):
         self._rows.setObjectName("alarmRows")
         self._row_layout = QVBoxLayout(self._rows)
         self._row_layout.setContentsMargins(0, 0, 4, 0)
-        self._row_layout.setSpacing(9)
+        self._row_layout.setSpacing(5)
         scroll.setWidget(self._rows)
         layout.addWidget(scroll, 1)
 
@@ -194,12 +234,34 @@ class ClockAlarmWindow(QDialog):
         else:
             self._row_layout.addStretch()
 
+    def _show_help(self) -> None:
+        QMessageBox.information(
+            self,
+            "闹钟使用说明",
+            "点「＋」添加闹钟，点击时间或名称进行编辑。右侧开关可以启停，右键菜单可删除该条闹钟。\n\n"
+            "编辑时可设置重复、响铃时长和稍后提醒，也可选择和试听铃声。"
+            f"默认铃声为《{DEFAULT_RINGTONE_TITLE}》。"
+            "试听和响铃都使用 Windows 当前的声音输出和音量。\n\n"
+            "到点后可停止或稍后提醒。关闭闹钟列表后，只要桌面助手仍在托盘运行，闹钟就会继续提醒。",
+        )
+
+    def _show_row_menu(self, position: QPoint, alarm_id: str) -> None:
+        menu = QMenu(self)
+        delete = menu.addAction("删除闹钟")
+        delete.triggered.connect(lambda: self.delete_requested.emit(alarm_id))
+        menu.aboutToHide.connect(menu.deleteLater)
+        menu.popup(position)
+
     def _make_row(self, alarm: ClockAlarm, ringing: bool) -> QFrame:
         row = QFrame()
         row.setObjectName("alarmRow")
+        row.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        row.customContextMenuRequested.connect(
+            lambda point: self._show_row_menu(row.mapToGlobal(point), alarm.alarm_id)
+        )
         line = QHBoxLayout(row)
-        line.setContentsMargins(10, 6, 14, 6)
-        line.setSpacing(10)
+        line.setContentsMargins(8, 4, 10, 4)
+        line.setSpacing(8)
 
         title = alarm.label or "闹钟"
         edit = _button("", "editRow")
@@ -210,25 +272,31 @@ class ClockAlarmWindow(QDialog):
         stack = QStackedLayout(card)
         stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
         display = QWidget()
-        content = QVBoxLayout(display)
-        content.setContentsMargins(8, 3, 8, 8)
-        content.setSpacing(1)
+        content = QHBoxLayout(display)
+        content.setContentsMargins(7, 0, 5, 0)
+        content.setSpacing(8)
         time_label = QLabel(f"{alarm.at:%H:%M}")
-        time_label.setObjectName("alarmTime")
+        time_label.setObjectName("listTime")
+        time_label.setMinimumWidth(58)
         time_label.setEnabled(alarm.enabled)
-        details = f"{title} · {alarm.repeat_label}"
+        details = f"· {alarm.repeat_label}"
         if ringing:
             details += " · 正在响铃"
         elif alarm.snoozed_until is not None:
             next_time = datetime.fromtimestamp(alarm.snoozed_until)
             details += f" · {next_time:%H:%M} 再提醒"
-        elif alarm.next_at is not None:
-            edit.setToolTip(f"下次响铃 {alarm.next_at:%m-%d %H:%M}")
-        subtitle = QLabel(details)
-        subtitle.setTextFormat(Qt.TextFormat.PlainText)
-        subtitle.setWordWrap(True)
+        tooltip = f"{title} {details}"
+        if alarm.next_at is not None and not ringing:
+            tooltip += f"\n下次响铃 {alarm.next_at:%m-%d %H:%M}"
+        edit.setToolTip(tooltip)
+        name = _AlarmText(title)
+        name.setObjectName("alarmName")
+        subtitle = _AlarmText(details)
+        subtitle.setObjectName("repeatLabel")
         content.addWidget(time_label)
+        content.addWidget(name)
         content.addWidget(subtitle)
+        content.addStretch()
         stack.addWidget(display)
         stack.addWidget(edit)
         stack.setCurrentWidget(edit)
@@ -247,7 +315,10 @@ class AlarmPlayback:
     def __init__(self, parent: QWidget) -> None:
         self._player = QMediaPlayer(parent)
         self._output = QAudioOutput(parent)
-        self._output.setVolume(0.85)
+        # Leave attenuation to the Windows endpoint and volume mixer.
+        self._output.setVolume(1.0)
+        self._devices = QMediaDevices(parent)
+        self._devices.audioOutputsChanged.connect(self._sync_default_output)
         self._player.setAudioOutput(self._output)
         self._player.setLoops(QMediaPlayer.Loops.Infinite)
         self._player.errorOccurred.connect(self._fallback)
@@ -259,9 +330,10 @@ class AlarmPlayback:
     def play(self, sound: str, path: str) -> None:
         self.stop()
         self._active = True
+        self._sync_default_output()
         try:
             if sound != "custom" or not path or not Path(path).is_file():
-                path = ensure_default_alarm_sound(sound)
+                path = clock_alarm_sound(sound)
         except OSError:
             self._fallback()
             return
@@ -272,6 +344,10 @@ class AlarmPlayback:
         self._active = False
         self._player.stop()
         self._beep_timer.stop()
+
+    def _sync_default_output(self) -> None:
+        if self._active:
+            self._output.setDevice(self._devices.defaultAudioOutput())
 
     def _fallback(self, *_error) -> None:
         if self._active and not self._beep_timer.isActive():
