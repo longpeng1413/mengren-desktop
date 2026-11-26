@@ -6,6 +6,7 @@ import json
 import math
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, time, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from app.config import RESOURCE_DIR
@@ -105,7 +106,19 @@ def clock_alarm_sound(sound: str) -> str:
 
 def new_clock_alarm(now: datetime) -> ClockAlarm:
     at = (now + timedelta(minutes=1)).time().replace(second=0, microsecond=0, fold=0)
+    path = settings_directory() / "clock_alarm_defaults.json"
+    try:
+        values = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(values, dict):
+            return ClockAlarm(uuid4().hex, at, **_alarm_options_from_json(values))
+    except (OSError, TypeError, ValueError, OverflowError):
+        pass
     return ClockAlarm(uuid4().hex, at)
+
+
+def save_clock_alarm_defaults(alarm: ClockAlarm) -> None:
+    path = settings_directory() / "clock_alarm_defaults.json"
+    _write_json(path, _alarm_options_from_json(asdict(alarm)))
 
 
 def load_clock_alarms() -> list[ClockAlarm]:
@@ -141,36 +154,46 @@ def _alarm_from_json(values: dict) -> ClockAlarm:
         if not math.isfinite(snoozed_until):
             raise ValueError("invalid snooze time")
         datetime.fromtimestamp(snoozed_until)
-    sound = values.get("sound", "default")
-    if sound not in {key for _, key in BUILTIN_SOUNDS} | {"custom"}:
-        sound = "default"
     return ClockAlarm(
         alarm_id,
         at.replace(second=0, microsecond=0),
-        label=str(values.get("label", ""))[:60],
-        weekdays=tuple(
-            sorted({day for day in values.get("weekdays", ()) if type(day) is int and 0 <= day <= 6})
-        ),
-        delete_after_ring=values.get("delete_after_ring") is True,
-        ring_seconds=max(5, min(RING_DURATIONS[-1][1], int(values.get("ring_seconds", 30)))),
-        snooze_minutes=max(0, min(60, int(values.get("snooze_minutes", 5)))),
-        sound=sound,
-        sound_path=str(values.get("sound_path", "")),
-        sound_name=str(values.get("sound_name", "")),
         next_at=next_at,
         snoozed_until=snoozed_until,
+        **_alarm_options_from_json(values),
     )
+
+
+def _alarm_options_from_json(values: dict) -> dict:
+    sound = values.get("sound", "default")
+    if sound not in {key for _, key in BUILTIN_SOUNDS} | {"custom"}:
+        sound = "default"
+    return {
+        "label": str(values.get("label", ""))[:60],
+        "weekdays": tuple(
+            sorted({day for day in values.get("weekdays", ()) if type(day) is int and 0 <= day <= 6})
+        ),
+        "delete_after_ring": values.get("delete_after_ring") is True,
+        "ring_seconds": max(5, min(RING_DURATIONS[-1][1], int(values.get("ring_seconds", 30)))),
+        "snooze_minutes": max(0, min(60, int(values.get("snooze_minutes", 5)))),
+        "sound": sound,
+        "sound_path": str(values.get("sound_path", "")),
+        "sound_name": str(values.get("sound_name", "")),
+    }
 
 
 def save_clock_alarms(alarms: list[ClockAlarm]) -> None:
     path = settings_directory() / "clock_alarms.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
     items = []
     for alarm in alarms:
         values = asdict(alarm)
         values["at"] = alarm.at.isoformat(timespec="minutes")
         values["next_at"] = alarm.next_at.isoformat() if alarm.next_at else None
         items.append(values)
+    _write_json(path, items)
+
+
+def _write_json(path: Path, values: dict | list) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.write_text(json.dumps(values, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(path)

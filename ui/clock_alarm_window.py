@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QStackedLayout,
     QTimeEdit,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -43,6 +44,7 @@ from app.clock_alarms import (
     WEEKDAY_NAMES,
     ClockAlarm,
     clock_alarm_sound,
+    save_clock_alarm_defaults,
 )
 from app.reminder_preferences import (
     AUDIO_EXTENSIONS,
@@ -313,6 +315,7 @@ class ClockAlarmWindow(QDialog):
             "闹钟使用说明",
             "点「＋」添加闹钟，点击时间或名称进行编辑。右侧开关可以启停，右键菜单可删除该条闹钟。\n\n"
             "编辑时可设置重复、响铃时长和稍后提醒，也可选择和试听铃声。"
+            "点「保存为默认」可将除时间以外的设置用于以后新建的闹钟。"
             f"默认铃声为《{DEFAULT_RINGTONE_TITLE}》。"
             "试听和响铃都使用 Windows 当前的声音输出和音量。\n\n"
             "到点后可停止或稍后提醒。关闭闹钟列表后，只要桌面助手仍在托盘运行，闹钟就会继续提醒。",
@@ -556,6 +559,10 @@ class ClockAlarmEditor(QDialog):
             delete = _button("删除闹钟", "dangerButton")
             delete.clicked.connect(self._delete_alarm)
             actions.addWidget(delete)
+        self._default_button = _button("保存为默认", "saveAlarmDefault")
+        self._default_button.setToolTip("将除时间以外的选项用于以后新建的闹钟")
+        self._default_button.clicked.connect(self._save_as_default)
+        actions.addWidget(self._default_button)
         actions.addStretch()
         cancel = _button("取消")
         cancel.clicked.connect(self.reject)
@@ -589,13 +596,13 @@ class ClockAlarmEditor(QDialog):
         self._preview.stop()
         self._preview_button.setText("试听")
 
-    def _save(self) -> None:
+    def _read_alarm(self) -> ClockAlarm | None:
         weekdays = self._repeat.currentData()
         if weekdays is None:
             weekdays = tuple(day for day, button in enumerate(self._days) if button.isChecked())
             if not weekdays:
                 QMessageBox.warning(self, APP_DISPLAY_NAME, "请至少选择一天。")
-                return
+                return None
         sound = self._sound.currentData()
         sound_path = ""
         if sound == "custom":
@@ -603,8 +610,8 @@ class ClockAlarmEditor(QDialog):
                 sound_path = import_reminder_asset(self._sound_path, "audio")
             except (OSError, ValueError):
                 QMessageBox.warning(self, APP_DISPLAY_NAME, "无法读取铃声，请选择一个本机音频文件。")
-                return
-        self.result_alarm = replace(
+                return None
+        return replace(
             self.result_alarm,
             at=self._at.time().toPython(),
             label=self._label.text().strip(),
@@ -616,7 +623,28 @@ class ClockAlarmEditor(QDialog):
             sound_path=sound_path,
             sound_name=self._sound_name if sound_path else "",
         )
-        self.accept()
+
+    def _save(self) -> None:
+        alarm = self._read_alarm()
+        if alarm is not None:
+            self.result_alarm = alarm
+            self.accept()
+
+    def _save_as_default(self) -> None:
+        alarm = self._read_alarm()
+        if alarm is None:
+            return
+        try:
+            save_clock_alarm_defaults(alarm)
+        except OSError:
+            QMessageBox.warning(self, APP_DISPLAY_NAME, "无法保存默认设置，请检查设置文件夹。")
+            return
+        if alarm.sound == "custom":
+            self._sound_path = alarm.sound_path
+        button = self._default_button
+        QToolTip.showText(
+            button.mapToGlobal(button.rect().bottomLeft()), "已保存为新闹钟的默认设置", button
+        )
 
     def _delete_alarm(self) -> None:
         self.delete_requested = True

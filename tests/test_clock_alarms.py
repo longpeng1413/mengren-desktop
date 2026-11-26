@@ -3,15 +3,16 @@
 from array import array
 from dataclasses import replace
 from datetime import datetime, time, timedelta
+import json
 from pathlib import Path
 import wave
 
 from PySide6.QtCore import QTime, Qt
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QAbstractButton, QApplication, QDialog, QFrame, QLabel, QMenu, QMessageBox, QPushButton, QWidget
+from PySide6.QtWidgets import QAbstractButton, QApplication, QDialog, QFrame, QLabel, QMenu, QMessageBox, QPushButton, QToolTip, QWidget
 
-from app.clock_alarms import ClockAlarm, clock_alarm_sound, load_clock_alarms, save_clock_alarms
+from app.clock_alarms import ClockAlarm, clock_alarm_sound, load_clock_alarms, new_clock_alarm, save_clock_alarms
 from app.reminder_preferences import (
     ensure_default_alarm_sound,
     new_reminder,
@@ -125,6 +126,79 @@ def test_duration_menus_offer_requested_values_and_keep_existing_custom_values()
     editor._save()
     assert editor.result_alarm == previous
     editor.deleteLater()
+
+
+def test_save_as_default_prefills_future_alarms_without_changing_the_current_alarm(tmp_path, monkeypatch) -> None:
+    _app = QApplication.instance() or QApplication([])
+    original = ClockAlarm("existing", time(8), label="原闹钟").set_enabled(True, MONDAY)
+    save_clock_alarms([original])
+    source = tmp_path / "铃声.wav"
+    source.write_bytes(Path(ensure_default_alarm_sound("gentle")).read_bytes())
+    monkeypatch.setattr("ui.clock_alarm_window.QFileDialog.getOpenFileName", lambda *_: (str(source), ""))
+    monkeypatch.setattr(QToolTip, "showText", lambda *_: None)
+    manager = ClockAlarmManager(now=lambda: MONDAY)
+    manager.open_list()
+
+    def save_defaults(editor):
+        editor._at.setTime(QTime(22, 45))
+        editor._label.setText("晨练")
+        editor._repeat.setCurrentText("自选星期")
+        editor._days[0].click()
+        editor._days[2].click()
+        editor._sound.setCurrentIndex(editor._sound.findData("custom"))
+        editor._choose.click()
+        editor._duration.setCurrentText("30m")
+        editor._snooze.setCurrentText("1h")
+        editor._delete_after.setChecked(True)
+        editor.findChild(QPushButton, "saveAlarmDefault").click()
+        assert editor.result_alarm == original
+        editor.reject()
+        return editor.result()
+
+    monkeypatch.setattr(ClockAlarmEditor, "exec", save_defaults)
+    manager._window.findChild(QPushButton, "editRow").click()
+    assert load_clock_alarms() == [original]
+    path = settings_directory() / "clock_alarm_defaults.json"
+    values = json.loads(path.read_text(encoding="utf-8"))
+    assert {"alarm_id", "at", "next_at", "snoozed_until"}.isdisjoint(values)
+    manager.shutdown()
+    source.unlink()
+
+    reopened = ClockAlarmManager(now=lambda: MONDAY + timedelta(minutes=23))
+    reopened.open_list()
+
+    def use_defaults(editor):
+        draft = editor.result_alarm
+        assert draft.alarm_id != original.alarm_id
+        assert draft.at == time(7, 24) and not draft.enabled
+        assert editor._at.time() == QTime(7, 24)
+        assert editor._label.text() == "晨练"
+        assert editor._repeat.currentText() == "自选星期"
+        assert [day for day, button in enumerate(editor._days) if button.isChecked()] == [0, 2]
+        assert editor._sound.currentData() == "custom"
+        assert editor._file_label.text() == "铃声.wav"
+        assert Path(draft.sound_path).is_file()
+        assert (editor._duration.currentData(), editor._snooze.currentData()) == (1800, 60)
+        assert editor._delete_after.isChecked()
+        editor._save()
+        return editor.result()
+
+    monkeypatch.setattr(ClockAlarmEditor, "exec", use_defaults)
+    reopened._window.findChild(QPushButton, "alarmAdd").click()
+    old, added = load_clock_alarms()
+    assert old == original and added.label == "晨练"
+    assert added.next_at == datetime(2026, 11, 23, 7, 24)
+    reopened.shutdown()
+
+
+def test_unreadable_default_options_leave_new_alarm_available() -> None:
+    path = settings_directory() / "clock_alarm_defaults.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"ring_seconds": []}', encoding="utf-8")
+
+    draft = new_clock_alarm(MONDAY)
+    assert draft.at == time(7, 1)
+    assert (draft.label, draft.weekdays, draft.ring_seconds, draft.snooze_minutes) == ("", (), 30, 5)
 
 
 def test_list_rows_stay_fixed_at_different_sizes_and_header_buttons_match() -> None:
