@@ -65,6 +65,7 @@ from app.system_actions import (
     put_computer_to_sleep,
 )
 from ui import theme
+from ui.clock_alarm_manager import ClockAlarmManager
 from ui.color_picker import pick_color
 from ui.currency_window import CurrencyWindow
 from ui.todo_widget import TodoListWidget
@@ -100,6 +101,7 @@ class ReminderLauncher(QWidget):
         ("贴图片", "image"),
         ("翻译", "translate"),
         ("闹钟", "alarm"),
+        ("日程提醒", "schedule"),
         ("计时器", "stopwatch"),
         ("倒计时", "countdown"),
         ("计算器", "calculator"),
@@ -283,7 +285,7 @@ class ReminderAlertDialog(QDialog):
         layout.addWidget(stop_button, 0, Qt.AlignmentFlag.AlignCenter)
 
     def show_reminder(self, reminder: ReminderSettings) -> None:
-        titles = {"alarm": "⏰ 闹钟提醒", "countdown": "⏰ 倒计时结束"}
+        titles = {"alarm": "⏰ 日程提醒", "countdown": "⏰ 倒计时结束"}
         self._title_label.setText(titles.get(reminder.kind, "⏰ 提醒时间到"))
         self._message_label.setText(reminder.text.strip() or "设定的提醒时间已经到了。")
         self.adjustSize()
@@ -604,7 +606,7 @@ class ReminderEditorDialog(QDialog):
         titles = {
             "text": "文字贴图",
             "image": "图片贴图",
-            "alarm": "闹钟",
+            "alarm": "日程提醒",
             "countdown": "倒计时",
         }
         self.setWindowTitle(titles.get(settings.kind, "桌面工具"))
@@ -710,7 +712,7 @@ class ReminderEditorDialog(QDialog):
         sound_widget = QWidget()
         sound_widget.setLayout(sound_row)
 
-        schedule_group = QGroupBox("闹钟与计时器")
+        schedule_group = QGroupBox("提醒设置")
         schedule_form = QFormLayout(schedule_group)
         schedule_form.addRow("提醒方式：", self._schedule_mode)
         schedule_form.addRow("响铃时间：", self._alarm_at)
@@ -883,7 +885,7 @@ class ReminderEditorDialog(QDialog):
             and bool(self._original.target_at)
         )
         if mode == "alarm" and alarm_at <= datetime.now() and not unchanged_alarm:
-            QMessageBox.warning(self, APP_DISPLAY_NAME, "闹钟时间必须晚于当前时间。")
+            QMessageBox.warning(self, APP_DISPLAY_NAME, "日程提醒时间必须晚于当前时间。")
             return
         try:
             image_path = (
@@ -1120,7 +1122,7 @@ class DesktopReminderWidget(QWidget):
             self._image_item.show()
         if settings.kind in {"alarm", "countdown", "stopwatch"}:
             default_titles = {
-                "alarm": "闹钟",
+                "alarm": "日程提醒",
                 "countdown": "倒计时",
                 "stopwatch": "计时器",
             }
@@ -1219,7 +1221,7 @@ class DesktopReminderWidget(QWidget):
         if mode == "countdown":
             text = f"倒计时：{_format_remaining(remaining)}"
         else:
-            text = f"闹钟：{target.strftime('%Y-%m-%d %H:%M:%S')}"
+            text = f"日程提醒：{target.strftime('%Y-%m-%d %H:%M:%S')}"
         self._timer_label.setText(text)
         self._timer_label.setStyleSheet(
             "color: #8fd6ff; font-size: 18px; font-weight: 700;"
@@ -1381,6 +1383,7 @@ class DesktopReminderManager:
             self._toggle_display_mode
         )
         self._launcher.set_always_on_top_mode(self._tool_settings.always_on_top)
+        self._clock_alarms = ClockAlarmManager(parent)
         self._alert = ReminderAlertDialog(parent)
         self._alert.dismiss_requested.connect(self._dismiss_alert)
 
@@ -1414,6 +1417,7 @@ class DesktopReminderManager:
     def restore(self) -> None:
         for reminder in list(self._reminders.values()):
             self._show_widget(reminder)
+        self._clock_alarms.start()
 
     def open_launcher(self) -> None:
         if self._launcher.isVisible():
@@ -1438,6 +1442,11 @@ class DesktopReminderManager:
         self.open_launcher()
 
     def _create_action(self, kind: str) -> None:
+        if kind == "alarm":
+            self._clock_alarms.open_list()
+            return
+        if kind == "schedule":
+            kind = "alarm"
         if kind in {"claude_apply", "claude_restore"}:
             if not open_claude_environment(restore=kind == "claude_restore"):
                 QMessageBox.warning(self._parent, APP_DISPLAY_NAME, "无法启动内置的 Claude 环境切换，请检查软件文件是否完整。")
@@ -1925,6 +1934,7 @@ class DesktopReminderManager:
 
     def shutdown(self) -> None:
         self._desktop_layer_timer.stop()
+        self._clock_alarms.shutdown()
         self.stop_alarm()
         self._launcher.close()
         self._alert.close()

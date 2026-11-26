@@ -1,0 +1,155 @@
+"""Local clock alarms and their persisted next occurrence."""
+
+from __future__ import annotations
+
+import json
+import math
+from dataclasses import asdict, dataclass, replace
+from datetime import datetime, time, timedelta
+from uuid import uuid4
+
+from app.reminder_preferences import settings_directory
+
+
+WEEKDAY_NAMES = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+REPEAT_PRESETS = (
+    ("仅一次", ()),
+    ("每天", tuple(range(7))),
+    ("周一至周五", tuple(range(5))),
+    ("周六和周日", (5, 6)),
+)
+BUILTIN_SOUNDS = (
+    ("默认提示音", "default"),
+    ("轻柔", "gentle"),
+    ("清脆", "bright"),
+)
+MISSED_ALARM_GRACE_SECONDS = 600
+
+
+@dataclass(frozen=True, slots=True)
+class ClockAlarm:
+    alarm_id: str
+    at: time
+    label: str = ""
+    weekdays: tuple[int, ...] = ()
+    delete_after_ring: bool = False
+    ring_seconds: int = 30
+    snooze_minutes: int = 5
+    sound: str = "default"
+    sound_path: str = ""
+    sound_name: str = ""
+    next_at: datetime | None = None
+    snoozed_until: float | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.next_at is not None or self.snoozed_until is not None
+
+    @property
+    def due_timestamp(self) -> float | None:
+        if self.snoozed_until is not None:
+            return self.snoozed_until
+        return self.next_at.timestamp() if self.next_at is not None else None
+
+    @property
+    def repeat_label(self) -> str:
+        for label, days in REPEAT_PRESETS:
+            if self.weekdays == days:
+                return label
+        return "、".join(WEEKDAY_NAMES[day] for day in self.weekdays)
+
+    def set_enabled(self, enabled: bool, now: datetime) -> ClockAlarm:
+        if not enabled:
+            return replace(self, next_at=None, snoozed_until=None)
+        for offset in range(8):
+            day = now.date() + timedelta(days=offset)
+            if self.weekdays and day.weekday() not in self.weekdays:
+                continue
+            candidate = datetime.combine(day, self.at)
+            if candidate.timestamp() > now.timestamp():
+                return replace(self, next_at=candidate, snoozed_until=None)
+        raise ValueError("alarm has no valid weekday")
+
+    def advance(self, now: datetime) -> ClockAlarm:
+        """Consume the occurrence, keeping repeating alarms armed."""
+        return self.set_enabled(bool(self.weekdays), now)
+
+    def snooze(self, now: datetime) -> ClockAlarm:
+        return replace(
+            self,
+            next_at=None,
+            snoozed_until=now.timestamp() + self.snooze_minutes * 60,
+        )
+
+
+def new_clock_alarm(now: datetime) -> ClockAlarm:
+    at = (now + timedelta(minutes=1)).time().replace(second=0, microsecond=0, fold=0)
+    return ClockAlarm(uuid4().hex, at)
+
+
+def load_clock_alarms() -> list[ClockAlarm]:
+    path = settings_directory() / "clock_alarms.json"
+    try:
+        items = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(items, list):
+        return []
+    alarms: dict[str, ClockAlarm] = {}
+    for item in items:
+        try:
+            alarm = _alarm_from_json(item)
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            continue
+        alarms[alarm.alarm_id] = alarm
+    return list(alarms.values())
+
+
+def _alarm_from_json(values: dict) -> ClockAlarm:
+    alarm_id = values["alarm_id"]
+    at = time.fromisoformat(values["at"])
+    if not isinstance(alarm_id, str) or not alarm_id or at.tzinfo is not None:
+        raise ValueError("invalid alarm ID or local time")
+    next_at = datetime.fromisoformat(values["next_at"]) if values.get("next_at") else None
+    if next_at is not None:
+        if next_at.tzinfo is not None:
+            raise ValueError("expected a local occurrence")
+        next_at.timestamp()
+    snoozed_until = values.get("snoozed_until")
+    if snoozed_until is not None:
+        if not math.isfinite(snoozed_until):
+            raise ValueError("invalid snooze time")
+        datetime.fromtimestamp(snoozed_until)
+    sound = values.get("sound", "default")
+    if sound not in {key for _, key in BUILTIN_SOUNDS} | {"custom"}:
+        sound = "default"
+    return ClockAlarm(
+        alarm_id,
+        at.replace(second=0, microsecond=0),
+        label=str(values.get("label", ""))[:60],
+        weekdays=tuple(
+            sorted({day for day in values.get("weekdays", ()) if type(day) is int and 0 <= day <= 6})
+        ),
+        delete_after_ring=values.get("delete_after_ring") is True,
+        ring_seconds=max(5, min(300, int(values.get("ring_seconds", 30)))),
+        snooze_minutes=max(0, min(60, int(values.get("snooze_minutes", 5)))),
+        sound=sound,
+        sound_path=str(values.get("sound_path", "")),
+        sound_name=str(values.get("sound_name", "")),
+        next_at=next_at,
+        snoozed_until=snoozed_until,
+    )
+
+
+def save_clock_alarms(alarms: list[ClockAlarm]) -> None:
+    path = settings_directory() / "clock_alarms.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    items = []
+    for alarm in alarms:
+        values = asdict(alarm)
+        values["at"] = alarm.at.isoformat(timespec="minutes")
+        values["next_at"] = alarm.next_at.isoformat() if alarm.next_at else None
+        items.append(values)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)

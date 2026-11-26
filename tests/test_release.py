@@ -5,14 +5,17 @@ from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton
 
 from app.branding import APP_DISPLAY_NAME, APP_VERSION
 from app.preferences import HotkeySettings
+from core.update import is_newer
 from ui.hotkey_dialog import HotkeyDialog
 from ui import main_window as main_window_module
 from ui.main_window import MainWindow
 
 
 def test_release_uses_current_version_metadata() -> None:
-    assert APP_VERSION == "1.0.0"
-    assert APP_DISPLAY_NAME == "猛人桌面助手v1.0.0"
+    assert APP_VERSION == "1.1.0"
+    assert APP_DISPLAY_NAME == "猛人桌面助手v1.1.0"
+    assert is_newer(APP_VERSION, "1.0.0")
+    assert is_newer(APP_VERSION, "18.40")
 
 
 def test_hotkey_dialog_edits_capture_teacher_and_reminder() -> None:

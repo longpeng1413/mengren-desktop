@@ -190,7 +190,7 @@ class MainWindow(QMainWindow):
             "长截图", "自动分段滚动并拼接\n到底自动完成"
         )
         reminder_button, self._reminder_key = self._card(
-            "桌面工具", "待办、贴文字、翻译、闹钟\n计时器、汇率、图标布局等"
+            "桌面工具", "待办、贴文字、翻译、闹钟\n日程提醒、计时器、汇率等"
         )
         presentation_button, self._presentation_key = self._card(
             "教鞭模式", "在屏幕上用画笔标注\n随时切回鼠标操作"
@@ -250,11 +250,11 @@ class MainWindow(QMainWindow):
         self._presentation_help = QLabel()
         self._update_presentation_help("")
         reminder_help = QLabel(
-            "桌面工具：按 F3 后选择待办、贴文字、贴图片、翻译、闹钟、计时器、倒计时、汇率或图标布局。"
+            "桌面工具：按 F3 后可打开闹钟列表、创建日程提醒，或使用待办、计时器、倒计时等工具。"
             "挂件保持在普通窗口底层；其他窗口只遮住重叠区域，未被遮挡的部分仍可看见。"
             "只有按住挂件拖动时才会移动。计时器提供开始、暂停/继续、重置和取消按钮，"
             "倒计时在相同按钮之外还可直接修改。"
-            "闹钟和倒计时到点后会弹出最顶层提醒窗，并可使用内置提示音或本机音乐。"
+            "闹钟可设置重复星期、铃声和稍后提醒。闹钟、日程提醒和倒计时到点后会弹出置顶提示。"
         )
         pin_help = QLabel(
             "贴图说明：截图后点击“贴图”；鼠标拖动移动，每次按 1 旋转 90°，"

@@ -327,26 +327,37 @@ def import_reminder_asset(source: str, kind: str) -> str:
     return str(destination)
 
 
-def ensure_default_alarm_sound() -> str:
+def ensure_default_alarm_sound(tone: str = "default") -> str:
     """Return optional bundled audio, with a generated tone as fallback."""
-    bundled = RESOURCE_DIR / "audio" / "default_reminder.mp3"
-    if bundled.is_file() and bundled.stat().st_size > 1000:
-        return str(bundled)
-    output = settings_directory() / "reminder_alarm.wav"
+    patterns = {
+        "default": (
+            (880.0, 0.28), (0.0, 0.10), (1174.66, 0.32),
+            (0.0, 0.16), (880.0, 0.28), (1174.66, 0.42),
+        ),
+        "gentle": (
+            (392.0, 0.35), (493.88, 0.28), (587.33, 0.52), (0.0, 0.58),
+        ),
+        "bright": (
+            (1046.50, 0.18), (0.0, 0.07), (1318.51, 0.18),
+            (0.0, 0.07), (1567.98, 0.24), (0.0, 0.60),
+        ),
+    }
+    if tone not in patterns:
+        tone = "default"
+    if tone == "default":
+        bundled = RESOURCE_DIR / "audio" / "default_reminder.mp3"
+        if bundled.is_file() and bundled.stat().st_size > 1000:
+            return str(bundled)
+        filename = "reminder_alarm.wav"
+    else:
+        filename = f"clock_alarm_{tone}.wav"
+    output = settings_directory() / filename
     if output.is_file() and output.stat().st_size > 1000:
         return str(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     sample_rate = 22050
     samples: list[bytes] = []
-    pattern = (
-        (880.0, 0.28),
-        (0.0, 0.10),
-        (1174.66, 0.32),
-        (0.0, 0.16),
-        (880.0, 0.28),
-        (1174.66, 0.42),
-    )
-    for frequency, duration in pattern:
+    for frequency, duration in patterns[tone]:
         count = int(sample_rate * duration)
         for index in range(count):
             envelope = min(1.0, index / 180, (count - index) / 220)
