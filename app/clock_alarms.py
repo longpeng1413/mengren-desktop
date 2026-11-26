@@ -31,6 +31,11 @@ BUILTIN_SOUNDS = tuple((name, key) for key, (name, _) in _RINGTONE_TRACKS.items(
     ("清脆", "bright"),
 )
 MISSED_ALARM_GRACE_SECONDS = 600
+RING_DURATIONS = (
+    ("30s", 30), ("1m", 60), ("2m", 120), ("3m", 180),
+    ("5m", 300), ("10m", 600), ("15m", 900), ("30m", 1800),
+)
+SNOOZE_DURATIONS = (("5m", 5), ("10m", 10), ("15m", 15), ("30m", 30), ("1h", 60))
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +152,7 @@ def _alarm_from_json(values: dict) -> ClockAlarm:
             sorted({day for day in values.get("weekdays", ()) if type(day) is int and 0 <= day <= 6})
         ),
         delete_after_ring=values.get("delete_after_ring") is True,
-        ring_seconds=max(5, min(300, int(values.get("ring_seconds", 30)))),
+        ring_seconds=max(5, min(RING_DURATIONS[-1][1], int(values.get("ring_seconds", 30)))),
         snooze_minutes=max(0, min(60, int(values.get("snooze_minutes", 5)))),
         sound=sound,
         sound_path=str(values.get("sound_path", "")),

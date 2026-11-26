@@ -49,7 +49,7 @@ class ClockAlarmManager(QObject):
 
     def open_list(self) -> None:
         if self._window is None:
-            self._window = ClockAlarmWindow(self._parent)
+            self._window = ClockAlarmWindow(self._parent, now=self._now)
             self._window.add_requested.connect(self._edit)
             self._window.edit_requested.connect(self._edit)
             self._window.delete_requested.connect(self._delete)

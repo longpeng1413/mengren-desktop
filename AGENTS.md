@@ -14,9 +14,11 @@ These rules apply to every future modification in this project.
 
 ## Versioning
 
-- A major user-facing update increments the integer version: `18` to `19`, then `20`.
-- A smaller update increments the decimal release: `18.19` to `18.20`, and so on.
-- After a major release, its smaller updates use that major number, for example `19.1`.
+- Use three numeric version components (`major.minor.patch`). The release after `1.2.0` is `1.2.1`.
+- Increment the third component by one for each release. Increment the second component only when
+  the third would exceed 9, then reset the third to 0 (for example, `1.2.9` becomes `1.3.0`).
+- Do not skip the third component based on the size of a change. Keep version comparisons compatible
+  with the older two-component releases.
 - `tests/test_release.py` asserts the current version; update it together with `branding.py`.
 
 ## Documentation required for every change

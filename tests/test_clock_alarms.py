@@ -19,7 +19,7 @@ from app.reminder_preferences import (
     settings_directory,
 )
 from ui.clock_alarm_manager import ClockAlarmManager
-from ui.clock_alarm_window import AlarmPlayback, ClockAlarmEditor
+from ui.clock_alarm_window import AlarmPlayback, ClockAlarmEditor, ClockAlarmWindow
 from ui.reminder_widget import DesktopReminderManager
 
 
@@ -65,8 +65,8 @@ def test_list_add_edit_toggle_and_delete_save_across_restart(monkeypatch) -> Non
         editor._days[0].click()
         editor._days[2].click()
         editor._sound.setCurrentIndex(editor._sound.findData("gentle"))
-        editor._duration.setValue(65)
-        editor._snooze.setValue(8)
+        editor._duration.setCurrentText("30m")
+        editor._snooze.setCurrentText("1h")
         editor._delete_after.setChecked(True)
         editor._save()
         return editor.result()
@@ -75,7 +75,7 @@ def test_list_add_edit_toggle_and_delete_save_across_restart(monkeypatch) -> Non
     window.findChild(QPushButton, "alarmAdd").click()
     alarm, = load_clock_alarms()
     assert (alarm.at, alarm.label, alarm.weekdays) == (time(6, 35), "晨练", (0, 2))
-    assert (alarm.sound, alarm.ring_seconds, alarm.snooze_minutes) == ("gentle", 65, 8)
+    assert (alarm.sound, alarm.ring_seconds, alarm.snooze_minutes) == ("gentle", 1800, 60)
     assert alarm.delete_after_ring
     assert alarm.next_at == datetime(2026, 11, 25, 6, 35)
 
@@ -106,6 +106,75 @@ def test_list_add_edit_toggle_and_delete_save_across_restart(monkeypatch) -> Non
     reopened._window.findChild(QPushButton, "editRow").click()
     assert not load_clock_alarms()
     reopened.shutdown()
+
+
+def test_duration_menus_offer_requested_values_and_keep_existing_custom_values() -> None:
+    _app = QApplication.instance() or QApplication([])
+    editor = ClockAlarmEditor(ClockAlarm("new", time(8)), False)
+    assert [editor._duration.itemText(i) for i in range(editor._duration.count())] == [
+        "30s", "1m", "2m", "3m", "5m", "10m", "15m", "30m",
+    ]
+    assert [editor._snooze.itemText(i) for i in range(editor._snooze.count())] == [
+        "5m", "10m", "15m", "30m", "1h",
+    ]
+    assert (editor._duration.currentData(), editor._snooze.currentData()) == (30, 5)
+    editor.deleteLater()
+
+    previous = ClockAlarm("previous", time(9), ring_seconds=65, snooze_minutes=0)
+    editor = ClockAlarmEditor(previous, True)
+    editor._save()
+    assert editor.result_alarm == previous
+    editor.deleteLater()
+
+
+def test_list_rows_stay_fixed_at_different_sizes_and_header_buttons_match() -> None:
+    app = QApplication.instance() or QApplication([])
+    window = ClockAlarmWindow(now=lambda: MONDAY)
+    one = ClockAlarm("one", time(8))
+    two = ClockAlarm("two", time(9))
+    window.set_alarms([one])
+    window.open_list()
+    for width, height in ((410, 342), (520, 600), (365, 230)):
+        window.resize(width, height)
+        app.processEvents()
+        row = window.findChild(QFrame, "alarmRow")
+        assert row.height() == row.minimumHeight() == row.maximumHeight() == 40
+    add = window.findChild(QPushButton, "alarmAdd")
+    help_button = window.findChild(QPushButton, "alarmHelp")
+    assert add.size() == help_button.size()
+    assert add.y() == help_button.y()
+
+    window.set_alarms([one, two])
+    app.processEvents()
+    rows = [row for row in window.findChildren(QFrame, "alarmRow") if row.isVisible()]
+    assert [row.height() for row in rows] == [40, 40]
+    assert rows[1].y() - rows[0].y() == 45
+    window.close()
+    window.deleteLater()
+
+
+def test_countdown_updates_only_for_enabled_single_alarms() -> None:
+    app = QApplication.instance() or QApplication([])
+    now = MONDAY
+    window = ClockAlarmWindow(now=lambda: now)
+    enabled = ClockAlarm("enabled", time(9, 35)).set_enabled(True, now)
+    disabled = ClockAlarm("disabled", time(10))
+    repeating = ClockAlarm("repeating", time(11), weekdays=(0, 2)).set_enabled(True, now)
+    window.set_alarms([enabled, disabled, repeating])
+    window.open_list()
+    app.processEvents()
+    rows = window.findChildren(QFrame, "alarmRow")
+    labels = [row.findChild(QLabel, "repeatLabel") for row in rows]
+    assert [label.text() for label in labels] == [
+        "· 仅一次 · 2小时35分后响铃", "· 仅一次", "· 周一、周三",
+    ]
+    now += timedelta(hours=1, minutes=25)
+    window._countdown_timer.timeout.emit()
+    app.processEvents()
+    assert labels[0].text() == "· 仅一次 · 1小时10分后响铃"
+    window.close()
+    assert not window._countdown_timer.isActive()
+    window.deleteLater()
 
 
 def test_list_context_menu_deletes_only_its_row_and_help_opens(monkeypatch) -> None:
